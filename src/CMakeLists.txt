@@ -89,7 +89,7 @@ set(ufofilter_SRCS
     ufo-volume-render-task.c
     ufo-write-task.c
     ufo-zeropad-task.c
-    )
+        )
 
 set(ufoaux_SRCS
     ufo-priv.c)
