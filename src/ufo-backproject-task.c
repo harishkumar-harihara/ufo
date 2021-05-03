@@ -31,8 +31,7 @@
 
 typedef enum {
     MODE_NEAREST,
-    MODE_TEXTURE,
-    MODE_ALG1,
+    MODE_TEXTURE
 } Mode;
 
 static GEnumValue mode_values[] = {
@@ -45,7 +44,6 @@ struct _UfoBackprojectTaskPrivate {
     cl_context context;
     cl_kernel nearest_kernel;
     cl_kernel texture_kernel;
-    cl_kernel optim_kernel;
     cl_mem sin_lut;
     cl_mem cos_lut;
     gfloat *host_sin_lut;
@@ -100,8 +98,7 @@ static gboolean
 ufo_backproject_task_process (UfoTask *task,
                               UfoBuffer **inputs,
                               UfoBuffer *output,
-                              UfoRequisition *requisition)
-{
+                              UfoRequisition *requisition) {
     UfoBackprojectTaskPrivate *priv;
     UfoGpuNode *node;
     UfoProfiler *profiler;
@@ -110,76 +107,46 @@ ufo_backproject_task_process (UfoTask *task,
     cl_mem out_mem;
     cl_kernel kernel;
     gfloat axis_pos;
-    UfoRequisition req3d;
 
     priv = UFO_BACKPROJECT_TASK (task)->priv;
-    node = UFO_GPU_NODE (ufo_task_node_get_proc_node (UFO_TASK_NODE (task)));
-    cmd_queue = ufo_gpu_node_get_cmd_queue (node);
-
-    // merge 4 inputs to form 3D array
-//    fprintf(stderr, "Requisition %lu %lu \n",requisition->dims[0],requisition->dims[1]);
-    requisition->n_dims = 3;
-    requisition->dims[2] = 4;
-
-    UfoBuffer *ndArray = ufo_buffer_new_with_data(requisition,(inputs),priv->context);
-    // to verify dimensions
-    UfoRequisition in_req;
-    ufo_buffer_get_requisition (ndArray, &in_req);
-    fprintf(stderr,"N dimensions: %u \n",in_req.n_dims);
-    fprintf(stderr,"Dimensions: %lu %lu %lu\n",in_req.dims[0], in_req.dims[1], in_req.dims[2]);
-
-    out_mem = ufo_buffer_get_device_array (output, cmd_queue);
+    node = UFO_GPU_NODE (ufo_task_node_get_proc_node(UFO_TASK_NODE(task)));
+    cmd_queue = ufo_gpu_node_get_cmd_queue(node);
+    out_mem = ufo_buffer_get_device_array(output, cmd_queue);
 
     if (priv->mode == MODE_TEXTURE) {
-//        cl_image_format format;
-//        format.image_channel_order = CL_INTENSITY;
-//        format.image_channel_data_type = CL_FLOAT;
-
-//        in_mem = clCreateImage3D (priv->context,
-//                         CL_MEM_READ_ONLY,
-//                         &format,
-//                         requisition->dims[0], requisition->dims[1], requisition->dims[2],
-//                         0, 0, ndArray, NULL);
-//        in_mem = ufo_buffer_get_device_image (inputs[0], cmd_queue);
-
-        in_mem = ufo_buffer_get_device_image(ndArray, cmd_queue);
+        in_mem = ufo_buffer_get_device_image(*inputs, cmd_queue);
         kernel = priv->texture_kernel;
-    }
-    else if(priv->mode == MODE_NEAREST){
-//        in_mem = ufo_buffer_get_device_array (inputs[0], cmd_queue);
-        in_mem = ufo_buffer_get_device_array(&ndArray[0], cmd_queue);
+    } else {
+        in_mem = ufo_buffer_get_device_array(*inputs, cmd_queue);
         kernel = priv->nearest_kernel;
-    }
-    else{
-//        fprintf(stderr, "Dimensions: %lu %lu %lu \n",requisition->dims[0],
-//                requisition->dims[1], requisition->dims[2]);
-        in_mem = ufo_buffer_get_device_image(ndArray, cmd_queue);
-        kernel = priv->optim_kernel;
     }
 
     /* Guess axis position if they are not provided by the user. */
     if (priv->axis_pos <= 0.0) {
         UfoRequisition in_req;
 
-        ufo_buffer_get_requisition (inputs[0], &in_req);
+        ufo_buffer_get_requisition(inputs[0], &in_req);
         axis_pos = (gfloat) ((gfloat) in_req.dims[0]) / 2.0f;
-    }
-    else {
+    } else {
         axis_pos = priv->axis_pos;
     }
 
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 0, sizeof (cl_mem), &in_mem));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 1, sizeof (cl_mem), &out_mem));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 2, sizeof (cl_mem), &priv->sin_lut));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 3, sizeof (cl_mem), &priv->cos_lut));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 4, sizeof (guint),  &priv->roi_x));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 5, sizeof (guint),  &priv->roi_y));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 6, sizeof (guint),  &priv->offset));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 7, sizeof (guint),  &priv->burst_projections));
-    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 8, sizeof (gfloat), &axis_pos));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &in_mem));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 3, sizeof(cl_mem), &priv->cos_lut));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 4, sizeof(guint), &priv->roi_x));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 5, sizeof(guint), &priv->roi_y));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
 
-    profiler = ufo_task_node_get_profiler (UFO_TASK_NODE (task));
-    ufo_profiler_call (profiler, cmd_queue, kernel, requisition->n_dims, requisition->dims, NULL);
+    profiler = ufo_task_node_get_profiler(UFO_TASK_NODE (task));
+    gsize localWorkSize[UFO_BUFFER_MAX_NDIMS];
+    localWorkSize[0] = 16;
+    localWorkSize[1] = 16;
+    localWorkSize[2] = 1;
+    ufo_profiler_call(profiler, cmd_queue, kernel, requisition->n_dims, requisition->dims, localWorkSize);
 
     return TRUE;
 }
@@ -196,7 +163,6 @@ ufo_backproject_task_setup (UfoTask *task,
     priv->context = ufo_resources_get_context (resources);
     priv->nearest_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_nearest", NULL, error);
     priv->texture_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex", NULL, error);
-    priv->optim_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_opt", NULL, error);
 
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainContext (priv->context), error);
 
@@ -252,26 +218,17 @@ ufo_backproject_task_get_requisition (UfoTask *task,
                                       GError **error)
 {
     UfoBackprojectTaskPrivate *priv;
-    UfoRequisition in_req1;
+    UfoRequisition in_req;
 
     priv = UFO_BACKPROJECT_TASK_GET_PRIVATE (task);
-
-    ufo_buffer_get_requisition (inputs[0], &in_req1);
-
-    // Check if the inputs have same dimensions
-    if (ufo_buffer_cmp_dimensions (inputs[1], &in_req1) != 0 ||
-        ufo_buffer_cmp_dimensions (inputs[2], &in_req1) != 0 ||
-        ufo_buffer_cmp_dimensions (inputs[3], &in_req1) != 0) {
-        g_set_error_literal (error, UFO_TASK_ERROR, UFO_TASK_ERROR_GET_REQUISITION,
-                             "Inputs must have the same size");
-    }
+    ufo_buffer_get_requisition (inputs[0], &in_req);
 
     /* If the number of projections is not specified use the input size */
     if (priv->n_projections == 0) {
-        priv->n_projections = (guint) in_req1.dims[1];
+        priv->n_projections = (guint) in_req.dims[1];
     }
 
-    priv->burst_projections = (guint) in_req1.dims[1];
+    priv->burst_projections = (guint) in_req.dims[1];
 
     if (priv->burst_projections > priv->n_projections) {
         g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_GET_REQUISITION,
@@ -281,12 +238,13 @@ ufo_backproject_task_get_requisition (UfoTask *task,
         return;
     }
 
-    requisition->n_dims = 2;
+    requisition->n_dims = in_req.n_dims;
 
     /* TODO: we should check here, that we might access data outside the
      * projections */
-    requisition->dims[0] = priv->roi_width == 0 ? in_req1.dims[0] : (gsize) priv->roi_width;
-    requisition->dims[1] = priv->roi_height == 0 ? in_req1.dims[0] : (gsize) priv->roi_height;
+    requisition->dims[0] = priv->roi_width == 0 ? in_req.dims[0] : (gsize) priv->roi_width;
+    requisition->dims[1] = priv->roi_height == 0 ? in_req.dims[0] : (gsize) priv->roi_height;
+    requisition->dims[2] = in_req.dims[2];
 
     if (priv->real_angle_step < 0.0) {
         if (priv->angle_step <= 0.0)
@@ -314,15 +272,16 @@ ufo_backproject_task_get_requisition (UfoTask *task,
 static guint
 ufo_filter_task_get_num_inputs (UfoTask *task)
 {
-    return 4;
+    return 1;
 }
 
 static guint
 ufo_filter_task_get_num_dimensions (UfoTask *task,
                                     guint input)
 {
-    g_return_val_if_fail (input <= 3, 0);
-    return 2;
+    g_return_val_if_fail (input == 0, 0);
+    // introduced "Stack" filter before "backproject", the third dimension indicates num of sinograms in a stream stacked together
+    return 3;
 }
 
 static UfoTaskMode
