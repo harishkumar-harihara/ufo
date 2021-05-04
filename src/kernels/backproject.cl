@@ -56,13 +56,17 @@ backproject_tex (read_only image2d_t sinogram,
                  const unsigned int y_offset,
                  const unsigned int angle_offset,
                  const unsigned int n_projections,
-                 const float axis_pos)
+                 const float axis_pos,
+                 int z)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     float sum = 0.0f;
+
+    const int sizex = get_global_size(0);
+    const int sizey = get_global_size(1);
 
 #ifdef DEVICE_TESLA_K20XM
 #pragma unroll 4
@@ -90,5 +94,5 @@ backproject_tex (read_only image2d_t sinogram,
         sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
     }
 
-    slice[idy * get_global_size(0) + idx] = sum * M_PI_F / n_projections;
+    slice[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
 }

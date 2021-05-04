@@ -113,6 +113,18 @@ ufo_backproject_task_process (UfoTask *task,
     cmd_queue = ufo_gpu_node_get_cmd_queue(node);
     out_mem = ufo_buffer_get_device_array(output, cmd_queue);
 
+    /* checking input and output dimensions
+    UfoRequisition outReq;
+    UfoRequisition inpReq;
+
+    ufo_buffer_get_requisition(output,&outReq);
+    ufo_buffer_get_requisition(inputs[0],&inpReq);
+
+    fprintf(stdout,"Num Dimensions Output: %u \n",outReq.n_dims);
+    fprintf(stdout,"Num Dimensions Input: %u \n",inpReq.n_dims);
+    fprintf(stdout,"Dimensions Input: %lu %lu %lu \n",inpReq.dims[0],inpReq.dims[1],inpReq.dims[2]);
+     */
+
     //Getting host array - 3D shape
     gfloat *refs= ufo_buffer_get_host_array(inputs[0], NULL);
 
@@ -173,7 +185,7 @@ ufo_backproject_task_process (UfoTask *task,
             axis_pos = priv->axis_pos;
         }
 
-
+//        out_mem = ufo_buffer_get_device_array(output, cmd_queue);
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &in_mem));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut));
@@ -183,6 +195,7 @@ ufo_backproject_task_process (UfoTask *task,
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &i));
 
         profiler = ufo_task_node_get_profiler(UFO_TASK_NODE (task));
 
