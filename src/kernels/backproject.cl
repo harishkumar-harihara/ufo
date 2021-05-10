@@ -96,3 +96,56 @@ backproject_tex (read_only image2d_t sinogram,
 
     slice[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
 }
+
+kernel void
+optimized_tex (read_only image3d_t sinogram,
+                 global float *slice,
+                 constant float *sin_lut,
+                 constant float *cos_lut,
+                 const unsigned int x_offset,
+                 const unsigned int y_offset,
+                 const unsigned int angle_offset,
+                 const unsigned int n_projections,
+                 const float axis_pos,
+                 int iter_offset)
+{
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+    const int idz = iter_offset*4 + get_global_id(2);
+    const float bx = idx - axis_pos + x_offset + 0.5f;
+    const float by = idy - axis_pos + y_offset + 0.5f;
+    float sum = 0.0f;
+
+    const int sizex = get_global_size(0);
+    const int sizey = get_global_size(1);
+    const int sizez = get_global_size(2);
+
+#ifdef DEVICE_TESLA_K20XM
+#pragma unroll 4
+#endif
+#ifdef DEVICE_TESLA_P100_PCIE_16GB
+#pragma unroll 2
+#endif
+#ifdef DEVICE_GEFORCE_GTX_TITAN_BLACK
+#pragma unroll 8
+#endif
+#ifdef DEVICE_GEFORCE_GTX_TITAN
+#pragma unroll 14
+#endif
+#ifdef DEVICE_GEFORCE_GTX_1080_TI
+#pragma unroll 10
+#endif
+#ifdef DEVICE_QUADRO_M6000
+#pragma unroll 2
+#endif
+#ifdef DEVICE_GFX1010
+#pragma unroll 4
+#endif
+    float4 temp;
+    for(int proj = 0; proj < n_projections; proj++) {
+        float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
+        sum += read_imagef (sinogram, volumeSampler , (float4)(h, proj + 0.5f,0.0,0.0)).x;
+    }
+
+    slice[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
+}

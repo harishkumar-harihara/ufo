@@ -44,6 +44,7 @@ struct _UfoBackprojectTaskPrivate {
     cl_context context;
     cl_kernel nearest_kernel;
     cl_kernel texture_kernel;
+    cl_kernel optimized_kernel;
     cl_mem sin_lut;
     cl_mem cos_lut;
     gfloat *host_sin_lut;
@@ -138,38 +139,48 @@ ufo_backproject_task_process (UfoTask *task,
     size_t region[3];
     region[0] = requisition->dims[0];
     region[1] = requisition->dims[1];
-    region[2] = 1;
 
     cl_event event;
     cl_int error;
-    cl_mem deviceMem;
+    int workDim;
 
     /* looping on Z dimension
      * for a single image if requistion->dims[2] is replaced with '1', the reconstruction logic works fine
      * but does not work for 4 images or greater than 1 */
+    gsize incr;
+    if(requisition->dims[2] < 4) {
+        incr = 1;
+    }
+    else{
+        if(requisition->dims[2]%4==0){
+            incr=4;
+        }
+    }
 
-    for (gsize i = 0; i < requisition->dims[2]; i++) {
+    int iteration_offset = 0;
+    for (gsize i = 0; i < requisition->dims[2]; i+=incr) {
         // Retrieving each slice
         gfloat *ref;
         ref = refs + i * requisition->dims[0] * requisition->dims[1];
 
-        /* To check if the slice is properly extracted
-         * Verified OK, these slices from 23rd stream to 39th stream have a sum greater than 0 just like in benchmarked slices
-        gfloat sum = 0;
-        for (gsize j = 0; j < requisition->dims[0] * requisition->dims[1]; j++) {
-            sum += (ref[j]);
-        }
-        if(sum > 0)
-            fprintf(stdout, "Sum of iteration %lu is %f \n", i, sum);
-            */
-
         if (priv->mode == MODE_TEXTURE) {
             // Create cl_mem image of each slice - This matches image2d_t of kernel input
-            in_mem = clCreateImage2D(priv->context, CL_MEM_READ_WRITE, &format, (size_t) requisition->dims[0],
-                                               (size_t) requisition->dims[1], 0, NULL, &error);
+            if(incr==1) {
+                in_mem = clCreateImage2D(priv->context, CL_MEM_READ_WRITE, &format, (size_t) requisition->dims[0],
+                                         (size_t) requisition->dims[1], 0, NULL, &error);
+
+                region[2] = incr;
+                workDim = 2;
+                kernel = priv->texture_kernel;
+            }else{
+                in_mem = clCreateImage3D(priv->context,CL_MEM_READ_WRITE,&format,(size_t)requisition->dims[0],(size_t)requisition->dims[1],incr,
+                                0,0,NULL,&error);
+                region[2] = incr;
+                workDim = 3;
+                kernel = priv->optimized_kernel;
+            }
             error = clEnqueueWriteImage(cmd_queue,in_mem,CL_TRUE,origin,region,0,0,ref,NULL,NULL,&event);
-//            in_mem = ufo_buffer_get_device_image(inputs[0], cmd_queue);
-            kernel = priv->texture_kernel;
+
         } else {
             in_mem = ufo_buffer_get_device_array(inputs[0], cmd_queue);
             kernel = priv->nearest_kernel;
@@ -195,16 +206,17 @@ ufo_backproject_task_process (UfoTask *task,
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &i));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &iteration_offset));
 
         profiler = ufo_task_node_get_profiler(UFO_TASK_NODE (task));
 
         // Setting global work size
-        gsize globalWorkSize[2];
+        gsize globalWorkSize[3];
         globalWorkSize[0] = requisition->dims[0];
         globalWorkSize[1] = requisition->dims[1];
-
-        ufo_profiler_call(profiler, cmd_queue, kernel, 2, globalWorkSize, NULL);
+        globalWorkSize[2] = incr;
+        ufo_profiler_call(profiler, cmd_queue, kernel, workDim, globalWorkSize, NULL);
+        iteration_offset++;
     }
     return TRUE;
 }
@@ -221,6 +233,7 @@ ufo_backproject_task_setup (UfoTask *task,
     priv->context = ufo_resources_get_context (resources);
     priv->nearest_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_nearest", NULL, error);
     priv->texture_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex", NULL, error);
+    priv->optimized_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "optimized_tex", NULL, error);
 
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainContext (priv->context), error);
 
@@ -229,6 +242,9 @@ ufo_backproject_task_setup (UfoTask *task,
 
     if (priv->texture_kernel != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_kernel), error);
+
+    if (priv->optimized_kernel != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->optimized_kernel), error);
 }
 
 static cl_mem
@@ -302,7 +318,7 @@ ufo_backproject_task_get_requisition (UfoTask *task,
      * projections */
     requisition->dims[0] = priv->roi_width == 0 ? in_req.dims[0] : (gsize) priv->roi_width;
     requisition->dims[1] = priv->roi_height == 0 ? in_req.dims[0] : (gsize) priv->roi_height;
-    requisition->dims[2] = in_req.dims[2];
+    requisition->dims[2] = in_req.n_dims == 3 ? in_req.dims[2]:1;
 
     if (priv->real_angle_step < 0.0) {
         if (priv->angle_step <= 0.0)
@@ -376,6 +392,11 @@ ufo_backproject_task_finalize (GObject *object)
     if (priv->texture_kernel) {
         UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->texture_kernel));
         priv->texture_kernel = NULL;
+    }
+
+    if (priv->optimized_kernel) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->optimized_kernel));
+        priv->optimized_kernel = NULL;
     }
 
     if (priv->context) {
@@ -586,6 +607,7 @@ ufo_backproject_task_init (UfoBackprojectTask *self)
     self->priv = priv = UFO_BACKPROJECT_TASK_GET_PRIVATE (self);
     priv->nearest_kernel = NULL;
     priv->texture_kernel = NULL;
+    priv->optimized_kernel = NULL;
     priv->n_projections = 0;
     priv->offset = 0;
     priv->axis_pos = -1.0;
