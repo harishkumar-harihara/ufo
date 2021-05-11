@@ -19,6 +19,7 @@
 #include "config.h"
 
 #include <string.h>
+#include <stdio.h>
 #include "ufo-stack-task.h"
 
 
@@ -156,6 +157,7 @@ ufo_stack_task_set_property (GObject *object,
         case PROP_NUM_ITEMS:
             priv->n_items = g_value_get_uint (value);
             break;
+
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
             break;
@@ -174,6 +176,7 @@ ufo_stack_task_get_property (GObject *object,
         case PROP_NUM_ITEMS:
             g_value_set_uint (value, priv->n_items);
             break;
+
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
             break;

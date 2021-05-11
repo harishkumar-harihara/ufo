@@ -100,6 +100,7 @@ ufo_backproject_task_process (UfoTask *task,
                               UfoBuffer **inputs,
                               UfoBuffer *output,
                               UfoRequisition *requisition) {
+
     UfoBackprojectTaskPrivate *priv;
     UfoGpuNode *node;
     UfoProfiler *profiler;
@@ -114,20 +115,10 @@ ufo_backproject_task_process (UfoTask *task,
     cmd_queue = ufo_gpu_node_get_cmd_queue(node);
     out_mem = ufo_buffer_get_device_array(output, cmd_queue);
 
-    /* checking input and output dimensions
-    UfoRequisition outReq;
-    UfoRequisition inpReq;
-
-    ufo_buffer_get_requisition(output,&outReq);
-    ufo_buffer_get_requisition(inputs[0],&inpReq);
-
-    fprintf(stdout,"Num Dimensions Output: %u \n",outReq.n_dims);
-    fprintf(stdout,"Num Dimensions Input: %u \n",inpReq.n_dims);
-    fprintf(stdout,"Dimensions Input: %lu %lu %lu \n",inpReq.dims[0],inpReq.dims[1],inpReq.dims[2]);
-     */
-
     //Getting host array - 3D shape
-    gfloat *refs= ufo_buffer_get_host_array(inputs[0], NULL);
+//    gfloat *refs= ufo_buffer_get_host_array(inputs[0], NULL);
+    cl_mem device_array = ufo_buffer_get_device_array(inputs[0],cmd_queue);
+//    cl_mem sub_buffer;
 
     // Setting parameters to write data (2D shape) to device
     cl_image_format format;
@@ -143,25 +134,26 @@ ufo_backproject_task_process (UfoTask *task,
     cl_event event;
     cl_int error;
     int workDim;
+    cl_buffer_region bufferRegion;
 
     /* looping on Z dimension
      * for a single image if requistion->dims[2] is replaced with '1', the reconstruction logic works fine
      * but does not work for 4 images or greater than 1 */
     gsize incr;
-    if(requisition->dims[2] < 4) {
-        incr = 1;
-    }
-    else{
-        if(requisition->dims[2]%4==0){
-            incr=4;
-        }
-    }
+    gsize z_dim=requisition->dims[2];
+    gsize i = 0;
+    while (i < requisition->dims[2]){
 
-    int iteration_offset = 0;
-    for (gsize i = 0; i < requisition->dims[2]; i+=incr) {
+        if(z_dim < 4)
+            incr = 1;
+        else
+            incr = 4;
+        z_dim -= incr;
+//        fprintf(stdout, "Increments: %lu \n",incr);
+
         // Retrieving each slice
-        gfloat *ref;
-        ref = refs + i * requisition->dims[0] * requisition->dims[1];
+//        gfloat *ref;
+//        ref = refs + i * requisition->dims[0] * requisition->dims[1];
 
         if (priv->mode == MODE_TEXTURE) {
             // Create cl_mem image of each slice - This matches image2d_t of kernel input
@@ -173,14 +165,14 @@ ufo_backproject_task_process (UfoTask *task,
                 workDim = 2;
                 kernel = priv->texture_kernel;
             }else{
-                in_mem = clCreateImage3D(priv->context,CL_MEM_READ_WRITE,&format,(size_t)requisition->dims[0],(size_t)requisition->dims[1],incr,
-                                0,0,NULL,&error);
+                in_mem = clCreateImage3D(priv->context,CL_MEM_READ_WRITE,&format,(size_t)requisition->dims[0],
+                                         (size_t)requisition->dims[1],incr,0,0,NULL,&error);
                 region[2] = incr;
                 workDim = 3;
                 kernel = priv->optimized_kernel;
             }
-            error = clEnqueueWriteImage(cmd_queue,in_mem,CL_TRUE,origin,region,0,0,ref,NULL,NULL,&event);
-
+//            error = clEnqueueWriteImage(cmd_queue,in_mem,CL_TRUE,origin,region,0,0,ref,NULL,NULL,&event);
+            error = clEnqueueCopyBufferToImage(cmd_queue,device_array,in_mem,i*requisition->dims[0] * requisition->dims[1],origin,region,0,NULL,&event);
         } else {
             in_mem = ufo_buffer_get_device_array(inputs[0], cmd_queue);
             kernel = priv->nearest_kernel;
@@ -196,7 +188,6 @@ ufo_backproject_task_process (UfoTask *task,
             axis_pos = priv->axis_pos;
         }
 
-//        out_mem = ufo_buffer_get_device_array(output, cmd_queue);
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &in_mem));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut));
@@ -206,7 +197,7 @@ ufo_backproject_task_process (UfoTask *task,
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &iteration_offset));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &i));
 
         profiler = ufo_task_node_get_profiler(UFO_TASK_NODE (task));
 
@@ -216,7 +207,7 @@ ufo_backproject_task_process (UfoTask *task,
         globalWorkSize[1] = requisition->dims[1];
         globalWorkSize[2] = incr;
         ufo_profiler_call(profiler, cmd_queue, kernel, workDim, globalWorkSize, NULL);
-        iteration_offset++;
+        i+=incr;
     }
     return TRUE;
 }
@@ -313,6 +304,7 @@ ufo_backproject_task_get_requisition (UfoTask *task,
     }
 
     requisition->n_dims = in_req.n_dims;
+//    fprintf(stdout,"Dimension-2: %lu \n",in_req.dims[2]);
 
     /* TODO: we should check here, that we might access data outside the
      * projections */

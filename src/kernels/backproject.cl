@@ -111,7 +111,7 @@ optimized_tex (read_only image3d_t sinogram,
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
-    const int idz = iter_offset*4 + get_global_id(2);
+    const int idz = iter_offset + get_global_id(2);
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     float sum = 0.0f;
