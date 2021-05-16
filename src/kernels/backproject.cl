@@ -49,7 +49,8 @@ backproject_nearest (global float *sinogram,
 
 kernel void
 backproject_tex (read_only image2d_t sinogram,
-                 global float *slice,
+//                 global float *slice,
+                 write_only image3d_t slice,
                  constant float *sin_lut,
                  constant float *cos_lut,
                  const unsigned int x_offset,
@@ -63,8 +64,8 @@ backproject_tex (read_only image2d_t sinogram,
     const int idy = get_global_id(1);
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
-    float sum = 0.0f;
-
+//    float sum = 0.0f;
+    float4 sum = {0.0f,0.0f,0.0f,0.0f};
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
@@ -91,30 +92,34 @@ backproject_tex (read_only image2d_t sinogram,
 #endif
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
+//        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
+        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f));
     }
-
-    slice[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
+    sum *= M_PI_F / n_projections;
+//    slice[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
+    write_imagef(slice,(int4)(idx,idy,z,0),sum);
 }
 
 kernel void
 optimized_tex (read_only image3d_t sinogram,
-                 global float *slice,
-                 constant float *sin_lut,
-                 constant float *cos_lut,
-                 const unsigned int x_offset,
-                 const unsigned int y_offset,
-                 const unsigned int angle_offset,
-                 const unsigned int n_projections,
-                 const float axis_pos,
-                 int iter_offset)
+//               global float *slice,
+               write_only image3d_t slice,
+               constant float *sin_lut,
+               constant float *cos_lut,
+               const unsigned int x_offset,
+               const unsigned int y_offset,
+               const unsigned int angle_offset,
+               const unsigned int n_projections,
+               const float axis_pos,
+               int iter_offset)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
     const int idz = iter_offset + get_global_id(2);
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
-    float sum = 0.0f;
+//    float sum = 0.0f;
+    float4 sum = {0.0f,0.0f,0.0f,0.0f};
 
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
@@ -144,8 +149,10 @@ optimized_tex (read_only image3d_t sinogram,
     float4 temp;
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-        sum += read_imagef (sinogram, volumeSampler , (float4)(h, proj + 0.5f,0.0,0.0)).x;
+//        sum += read_imagef (sinogram, volumeSampler , (float4)(h, proj + 0.5f,0.0,0.0)).x;
+        sum += read_imagef (sinogram, volumeSampler , (float4)(h, proj + 0.5f,0.0,0.0));
     }
-
-    slice[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
+    sum *= M_PI_F / n_projections;
+//    slice[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
+    write_imagef(slice,(int4)(idx,idy,idz,0),sum);
 }

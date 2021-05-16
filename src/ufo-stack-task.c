@@ -75,7 +75,6 @@ ufo_stack_task_get_requisition (UfoTask *task,
 
     ufo_buffer_get_requisition (inputs[0], requisition);
 
-    fprintf(stdout,"Inside task requisition \n");
     requisition->n_dims = 3;
     requisition->dims[2] = priv->n_items;
 }

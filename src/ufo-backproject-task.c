@@ -113,12 +113,13 @@ ufo_backproject_task_process (UfoTask *task,
     priv = UFO_BACKPROJECT_TASK (task)->priv;
     node = UFO_GPU_NODE (ufo_task_node_get_proc_node(UFO_TASK_NODE(task)));
     cmd_queue = ufo_gpu_node_get_cmd_queue(node);
-    out_mem = ufo_buffer_get_device_array(output, cmd_queue);
+
+    // Output
+    out_mem = ufo_buffer_get_device_image(output,cmd_queue);
+//    out_mem = ufo_buffer_get_device_array(output, cmd_queue);
 
     //Getting host array - 3D shape
-//    gfloat *refs= ufo_buffer_get_host_array(inputs[0], NULL);
     cl_mem device_array = ufo_buffer_get_device_array(inputs[0],cmd_queue);
-//    cl_mem sub_buffer;
 
     // Setting parameters to write data (2D shape) to device
     cl_image_format format;
@@ -134,7 +135,6 @@ ufo_backproject_task_process (UfoTask *task,
     cl_event event;
     cl_int error;
     int workDim;
-    cl_buffer_region bufferRegion;
 
     /* looping on Z dimension
      * for a single image if requistion->dims[2] is replaced with '1', the reconstruction logic works fine
@@ -142,6 +142,7 @@ ufo_backproject_task_process (UfoTask *task,
     gsize incr;
     gsize z_dim=requisition->dims[2];
     gsize i = 0;
+
     while (i < requisition->dims[2]){
 
         if(z_dim < 4)
@@ -149,12 +150,8 @@ ufo_backproject_task_process (UfoTask *task,
         else
             incr = 4;
         z_dim -= incr;
-//        fprintf(stdout, "Increments: %lu \n",incr);
 
         // Retrieving each slice
-//        gfloat *ref;
-//        ref = refs + i * requisition->dims[0] * requisition->dims[1];
-
         if (priv->mode == MODE_TEXTURE) {
             // Create cl_mem image of each slice - This matches image2d_t of kernel input
             if(incr==1) {
@@ -171,7 +168,6 @@ ufo_backproject_task_process (UfoTask *task,
                 workDim = 3;
                 kernel = priv->optimized_kernel;
             }
-//            error = clEnqueueWriteImage(cmd_queue,in_mem,CL_TRUE,origin,region,0,0,ref,NULL,NULL,&event);
             error = clEnqueueCopyBufferToImage(cmd_queue,device_array,in_mem,i*requisition->dims[0] * requisition->dims[1],origin,region,0,NULL,&event);
         } else {
             in_mem = ufo_buffer_get_device_array(inputs[0], cmd_queue);
