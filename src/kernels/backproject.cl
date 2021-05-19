@@ -48,9 +48,85 @@ backproject_nearest (global float *sinogram,
 }
 
 kernel void
+interleave (read_only image3d_t sinogram,
+            global float4 *slices)
+{
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+//    const int idz = get_global_id(2);
+    const int sizex = get_global_size(0);
+
+    slices[idy * sizex + idx].x = read_imagef (sinogram, volumeSampler , (int4)(idx, idy,0,0)).x;
+    slices[idy * sizex + idx].y = read_imagef (sinogram, volumeSampler , (int4)(idx, idy,1,0)).x;
+    slices[idy * sizex + idx].z = read_imagef (sinogram, volumeSampler , (int4)(idx, idy,2,0)).x;
+    slices[idy * sizex + idx].w = read_imagef (sinogram, volumeSampler , (int4)(idx, idy,3,0)).x;
+}
+
+kernel void
+uninterleave (global float4 *input,
+              global float *output,
+              int slice_offset)
+{
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+    const int sizex = get_global_size(0);
+    const int sizey = get_global_size(1);
+
+    output[idx + idy*sizey + (slice_offset+0)*sizex*sizey] = input[idx + idy*sizex].x;
+    output[idx + idy*sizey + (slice_offset+1)*sizex*sizey] = input[idx + idy*sizex].y;
+    output[idx + idy*sizey + (slice_offset+2)*sizex*sizey] = input[idx + idy*sizex].z;
+    output[idx + idy*sizey + (slice_offset+3)*sizex*sizey] = input[idx + idy*sizex].w;
+}
+
+kernel void
 backproject_tex (read_only image2d_t sinogram,
-//                 global float *slice,
-                 write_only image3d_t slice,
+                 global float *slice,
+                 constant float *sin_lut,
+                 constant float *cos_lut,
+                 const unsigned int x_offset,
+                 const unsigned int y_offset,
+                 const unsigned int angle_offset,
+                 const unsigned int n_projections,
+                 const float axis_pos)
+{
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+    const float bx = idx - axis_pos + x_offset + 0.5f;
+    const float by = idy - axis_pos + y_offset + 0.5f;
+    float sum = 0.0f;
+
+#ifdef DEVICE_TESLA_K20XM
+#pragma unroll 4
+#endif
+#ifdef DEVICE_TESLA_P100_PCIE_16GB
+#pragma unroll 2
+#endif
+#ifdef DEVICE_GEFORCE_GTX_TITAN_BLACK
+#pragma unroll 8
+#endif
+#ifdef DEVICE_GEFORCE_GTX_TITAN
+#pragma unroll 14
+#endif
+#ifdef DEVICE_GEFORCE_GTX_1080_TI
+#pragma unroll 10
+#endif
+#ifdef DEVICE_QUADRO_M6000
+#pragma unroll 2
+#endif
+#ifdef DEVICE_GFX1010
+#pragma unroll 4
+#endif
+    for(int proj = 0; proj < n_projections; proj++) {
+        float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
+        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
+    }
+
+    slice[idy * get_global_size(0) + idx] = sum * M_PI_F / n_projections;
+}
+
+kernel void
+backproject_tex2d (read_only image2d_t sinogram,
+                 global float *slice,
                  constant float *sin_lut,
                  constant float *cos_lut,
                  const unsigned int x_offset,
@@ -64,8 +140,7 @@ backproject_tex (read_only image2d_t sinogram,
     const int idy = get_global_id(1);
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
-//    float sum = 0.0f;
-    float4 sum = {0.0f,0.0f,0.0f,0.0f};
+    float sum = 0.0f;
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
@@ -92,39 +167,31 @@ backproject_tex (read_only image2d_t sinogram,
 #endif
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-//        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
-        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f));
+        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
     }
-    sum *= M_PI_F / n_projections;
-//    slice[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
-    write_imagef(slice,(int4)(idx,idy,z,0),sum);
+    slice[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
 }
 
 kernel void
-optimized_tex (read_only image3d_t sinogram,
-//               global float *slice,
-               write_only image3d_t slice,
-               constant float *sin_lut,
-               constant float *cos_lut,
-               const unsigned int x_offset,
-               const unsigned int y_offset,
-               const unsigned int angle_offset,
-               const unsigned int n_projections,
-               const float axis_pos,
-               int iter_offset)
+backproject_tex3d (global float4* sinogram,
+                   global float4 *slice,
+                   constant float *sin_lut,
+                   constant float *cos_lut,
+                   const unsigned int x_offset,
+                   const unsigned int y_offset,
+                   const unsigned int angle_offset,
+                   const unsigned int n_projections,
+                   const float axis_pos)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
-    const int idz = iter_offset + get_global_id(2);
+
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
-//    float sum = 0.0f;
     float4 sum = {0.0f,0.0f,0.0f,0.0f};
 
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
-    const int sizez = get_global_size(2);
-
 #ifdef DEVICE_TESLA_K20XM
 #pragma unroll 4
 #endif
@@ -146,13 +213,9 @@ optimized_tex (read_only image3d_t sinogram,
 #ifdef DEVICE_GFX1010
 #pragma unroll 4
 #endif
-    float4 temp;
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-//        sum += read_imagef (sinogram, volumeSampler , (float4)(h, proj + 0.5f,0.0,0.0)).x;
-        sum += read_imagef (sinogram, volumeSampler , (float4)(h, proj + 0.5f,0.0,0.0));
+        sum += sinogram[(int)(proj * sizex + h)];
     }
-    sum *= M_PI_F / n_projections;
-//    slice[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
-    write_imagef(slice,(int4)(idx,idy,idz,0),sum);
+    slice[idy * sizex + idx] = sum * M_PI_F / n_projections;
 }

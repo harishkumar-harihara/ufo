@@ -44,7 +44,10 @@ struct _UfoBackprojectTaskPrivate {
     cl_context context;
     cl_kernel nearest_kernel;
     cl_kernel texture_kernel;
-    cl_kernel optimized_kernel;
+    cl_kernel optimized_kernel_2d;
+    cl_kernel optimized_kernel_3d;
+    cl_kernel interleave;
+    cl_kernel uninterleave;
     cl_mem sin_lut;
     cl_mem cos_lut;
     gfloat *host_sin_lut;
@@ -99,8 +102,8 @@ static gboolean
 ufo_backproject_task_process (UfoTask *task,
                               UfoBuffer **inputs,
                               UfoBuffer *output,
-                              UfoRequisition *requisition) {
-
+                              UfoRequisition *requisition)
+{
     UfoBackprojectTaskPrivate *priv;
     UfoGpuNode *node;
     UfoProfiler *profiler;
@@ -113,87 +116,70 @@ ufo_backproject_task_process (UfoTask *task,
     priv = UFO_BACKPROJECT_TASK (task)->priv;
     node = UFO_GPU_NODE (ufo_task_node_get_proc_node(UFO_TASK_NODE(task)));
     cmd_queue = ufo_gpu_node_get_cmd_queue(node);
+    out_mem = ufo_buffer_get_device_array (output, cmd_queue);
 
-    // Output
-    out_mem = ufo_buffer_get_device_image(output,cmd_queue);
-//    out_mem = ufo_buffer_get_device_array(output, cmd_queue);
+    /* Guess axis position if they are not provided by the user. */
+    if (priv->axis_pos <= 0.0) {
+        UfoRequisition in_req;
 
-    //Getting host array - 3D shape
-    cl_mem device_array = ufo_buffer_get_device_array(inputs[0],cmd_queue);
+        ufo_buffer_get_requisition(inputs[0], &in_req);
+        axis_pos = (gfloat) ((gfloat) in_req.dims[0]) / 2.0f;
+    } else {
+        axis_pos = priv->axis_pos;
+    }
 
-    // Setting parameters to write data (2D shape) to device
-    cl_image_format format;
-    format.image_channel_order = CL_INTENSITY;
-    format.image_channel_data_type = CL_FLOAT;
-
-    size_t origin[] = { 0, 0, 0 };
-
-    size_t region[3];
-    region[0] = requisition->dims[0];
-    region[1] = requisition->dims[1];
-
-    cl_event event;
-    cl_int error;
-    int workDim;
-
-    /* looping on Z dimension
-     * for a single image if requistion->dims[2] is replaced with '1', the reconstruction logic works fine
-     * but does not work for 4 images or greater than 1 */
-    gsize incr;
-    gsize z_dim=requisition->dims[2];
-    gsize i = 0;
-
-    while (i < requisition->dims[2]){
-
-        if(z_dim < 4)
-            incr = 1;
-        else
-            incr = 4;
-        z_dim -= incr;
-
-        // Retrieving each slice
+    if(requisition->n_dims == 2){
+        //older variant
         if (priv->mode == MODE_TEXTURE) {
-            // Create cl_mem image of each slice - This matches image2d_t of kernel input
-            if(incr==1) {
-                in_mem = clCreateImage2D(priv->context, CL_MEM_READ_WRITE, &format, (size_t) requisition->dims[0],
-                                         (size_t) requisition->dims[1], 0, NULL, &error);
-
-                region[2] = incr;
-                workDim = 2;
-                kernel = priv->texture_kernel;
-            }else{
-                in_mem = clCreateImage3D(priv->context,CL_MEM_READ_WRITE,&format,(size_t)requisition->dims[0],
-                                         (size_t)requisition->dims[1],incr,0,0,NULL,&error);
-                region[2] = incr;
-                workDim = 3;
-                kernel = priv->optimized_kernel;
-            }
-            error = clEnqueueCopyBufferToImage(cmd_queue,device_array,in_mem,i*requisition->dims[0] * requisition->dims[1],origin,region,0,NULL,&event);
-        } else {
-            in_mem = ufo_buffer_get_device_array(inputs[0], cmd_queue);
+            in_mem = ufo_buffer_get_device_image (inputs[0], cmd_queue);
+            kernel = priv->texture_kernel;
+        }
+        else {
+            in_mem = ufo_buffer_get_device_array (inputs[0], cmd_queue);
             kernel = priv->nearest_kernel;
         }
 
-        /* Guess axis position if they are not provided by the user. */
-        if (priv->axis_pos <= 0.0) {
-            UfoRequisition in_req;
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 0, sizeof (cl_mem), &in_mem));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 1, sizeof (cl_mem), &out_mem));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 2, sizeof (cl_mem), &priv->sin_lut));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 3, sizeof (cl_mem), &priv->cos_lut));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 4, sizeof (guint),  &priv->roi_x));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 5, sizeof (guint),  &priv->roi_y));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 6, sizeof (guint),  &priv->offset));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 7, sizeof (guint),  &priv->burst_projections));
+        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 8, sizeof (gfloat), &axis_pos));
 
-            ufo_buffer_get_requisition(inputs[0], &in_req);
-            axis_pos = (gfloat) ((gfloat) in_req.dims[0]) / 2.0f;
-        } else {
-            axis_pos = priv->axis_pos;
-        }
+        profiler = ufo_task_node_get_profiler (UFO_TASK_NODE (task));
+        ufo_profiler_call (profiler, cmd_queue, kernel, 2, requisition->dims, NULL);
+    }
+    else{
+        // Image format
+        cl_image_format format;
+        format.image_channel_order = CL_INTENSITY;
+        format.image_channel_data_type = CL_FLOAT;
 
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &in_mem));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 3, sizeof(cl_mem), &priv->cos_lut));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 4, sizeof(guint), &priv->roi_x));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 5, sizeof(guint), &priv->roi_y));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &i));
+        //Work dimension
+        int work_dim = 2;
+
+        // Region to copy
+        size_t region[3];
+        region[0] = requisition->dims[0];
+        region[1] = requisition->dims[1];
+
+        //Source and Destination origins
+        size_t src_origin[3];
+        src_origin[0] =  0;
+        src_origin[1] =  0;
+
+        size_t dst_origin[] = { 0, 0, 0 };
+
+        // UfoBuffer to OpenCL device image
+        cl_mem device_image = ufo_buffer_get_device_image(inputs[0],cmd_queue);
+
+        // To process arbitrary number of sinograms
+        gsize it = 0;                       // offset @ Z dimension at global
+        gsize z_dim = requisition->dims[2]; // whether to create a 2D or 3D input
+        gsize  incr;                        // to set the Z dimension at local
 
         profiler = ufo_task_node_get_profiler(UFO_TASK_NODE (task));
 
@@ -201,10 +187,101 @@ ufo_backproject_task_process (UfoTask *task,
         gsize globalWorkSize[3];
         globalWorkSize[0] = requisition->dims[0];
         globalWorkSize[1] = requisition->dims[1];
-        globalWorkSize[2] = incr;
-        ufo_profiler_call(profiler, cmd_queue, kernel, workDim, globalWorkSize, NULL);
-        i+=incr;
+
+        while (it < requisition->dims[2]){  // check if all slices have been processed
+            if(z_dim < 4){
+                incr = 1;                   // when the #slices < 4, just reconstruct the slice
+                in_mem = clCreateImage2D(priv->context,
+                                CL_MEM_READ_WRITE,
+                                &format,
+                                requisition->dims[0],
+                                requisition->dims[1],
+                                0,
+                                NULL,0);
+                region[2] = incr;
+                src_origin[2] = it;
+                // Copy Image
+                clEnqueueCopyImage(cmd_queue,device_image,in_mem,src_origin,dst_origin,region,0,NULL,NULL);
+
+                kernel = priv->optimized_kernel_2d;
+
+                // Set kernel arguments
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &in_mem));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 3, sizeof(cl_mem), &priv->cos_lut));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 4, sizeof(guint), &priv->roi_x));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 5, sizeof(guint), &priv->roi_y));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &it));
+
+                globalWorkSize[2] = incr;
+                ufo_profiler_call(profiler, cmd_queue, kernel, work_dim, globalWorkSize, NULL);
+            } else{
+                incr = 4;                   // else interleave, reconstruct and uninterleave using vector data types
+
+                // ******* PREPARE THE IMAGE FROM OFFSET ******* //
+                in_mem = clCreateImage3D(priv->context,
+                                CL_MEM_READ_WRITE,
+                                &format,
+                                requisition->dims[0],
+                                requisition->dims[1],
+                                incr,
+                                0,0,NULL,0);
+                region[2] = incr;
+                src_origin[2] = it;
+                //Copy Image
+                clEnqueueCopyImage(cmd_queue,device_image,in_mem,src_origin,dst_origin,region,0,NULL,NULL);
+
+                // ******* PREPARE THE VECTOR BUFFER / INTERLEAVE STAGE ******* //
+
+                cl_mem vector_slice;
+                vector_slice = clCreateBuffer(priv->context,CL_MEM_READ_WRITE, sizeof(cl_float4)*requisition->dims[0]*requisition->dims[1],NULL,0);
+
+                kernel = priv->interleave;
+                // Set kernel arguments
+                clSetKernelArg(kernel, 0, sizeof(cl_mem), &in_mem);
+                clSetKernelArg(kernel, 1, sizeof(cl_mem), &vector_slice);
+
+                globalWorkSize[2] = incr;
+                work_dim = 3;
+                ufo_profiler_call(profiler, cmd_queue, kernel, work_dim, globalWorkSize, NULL);
+
+                // ******* BACKPROJECTION / SINOGRAM RECONSTRUCTION ******* //
+                kernel = priv->optimized_kernel_3d;
+
+                cl_mem vector_output_slice;
+                vector_output_slice = clCreateBuffer(priv->context,CL_MEM_READ_WRITE, sizeof(cl_float4)*requisition->dims[0]*requisition->dims[1],NULL,0);
+
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &vector_slice));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &vector_output_slice));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 3, sizeof(cl_mem), &priv->cos_lut));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 4, sizeof(guint), &priv->roi_x));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 5, sizeof(guint), &priv->roi_y));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
+
+                size_t gSize[2] = {requisition->dims[0],requisition->dims[1]};
+                ufo_profiler_call(profiler, cmd_queue, kernel, 2, gSize, NULL);
+
+                // ******* UNINTERLEAVE / PREPARE OUTPUT SLICES ******* //
+                kernel = priv->uninterleave;
+
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &vector_output_slice));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem));
+                UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(int), &it));
+
+                ufo_profiler_call(profiler, cmd_queue, kernel, 2, gSize, NULL);
+            }
+            it += incr;                     // count of processed slices
+            z_dim -= incr;                  // calculates #unprocessed slices
+        }
     }
+
     return TRUE;
 }
 
@@ -220,7 +297,10 @@ ufo_backproject_task_setup (UfoTask *task,
     priv->context = ufo_resources_get_context (resources);
     priv->nearest_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_nearest", NULL, error);
     priv->texture_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex", NULL, error);
-    priv->optimized_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "optimized_tex", NULL, error);
+    priv->optimized_kernel_3d = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex3d", NULL, error);
+    priv->optimized_kernel_2d = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex2d", NULL, error);
+    priv->interleave = ufo_resources_get_kernel (resources, "backproject.cl", "interleave", NULL, error);
+    priv->uninterleave = ufo_resources_get_kernel (resources, "backproject.cl", "uninterleave", NULL, error);
 
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainContext (priv->context), error);
 
@@ -230,8 +310,17 @@ ufo_backproject_task_setup (UfoTask *task,
     if (priv->texture_kernel != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_kernel), error);
 
-    if (priv->optimized_kernel != NULL)
-    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->optimized_kernel), error);
+    if (priv->optimized_kernel_3d != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->optimized_kernel_3d), error);
+
+    if (priv->optimized_kernel_2d != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->optimized_kernel_2d), error);
+
+    if (priv->interleave != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->interleave), error);
+
+    if (priv->uninterleave != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->uninterleave), error);
 }
 
 static cl_mem
@@ -300,7 +389,6 @@ ufo_backproject_task_get_requisition (UfoTask *task,
     }
 
     requisition->n_dims = in_req.n_dims;
-//    fprintf(stdout,"Dimension-2: %lu \n",in_req.dims[2]);
 
     /* TODO: we should check here, that we might access data outside the
      * projections */
@@ -382,9 +470,24 @@ ufo_backproject_task_finalize (GObject *object)
         priv->texture_kernel = NULL;
     }
 
-    if (priv->optimized_kernel) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->optimized_kernel));
-        priv->optimized_kernel = NULL;
+    if (priv->optimized_kernel_2d) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->optimized_kernel_2d));
+        priv->optimized_kernel_2d = NULL;
+    }
+
+    if (priv->optimized_kernel_3d) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->optimized_kernel_3d));
+        priv->optimized_kernel_3d = NULL;
+    }
+
+    if (priv->interleave) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->interleave));
+        priv->interleave = NULL;
+    }
+
+    if (priv->uninterleave) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->uninterleave));
+        priv->uninterleave = NULL;
     }
 
     if (priv->context) {
@@ -595,7 +698,10 @@ ufo_backproject_task_init (UfoBackprojectTask *self)
     self->priv = priv = UFO_BACKPROJECT_TASK_GET_PRIVATE (self);
     priv->nearest_kernel = NULL;
     priv->texture_kernel = NULL;
-    priv->optimized_kernel = NULL;
+    priv->optimized_kernel_2d = NULL;
+    priv->interleave = NULL;
+    priv->uninterleave = NULL;
+    priv->optimized_kernel_3d = NULL;
     priv->n_projections = 0;
     priv->offset = 0;
     priv->axis_pos = -1.0;
