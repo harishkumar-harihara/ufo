@@ -111,8 +111,6 @@ ufo_backproject_task_process (UfoTask *task,
     cl_mem in_mem;
     cl_mem out_mem;
     cl_mem vector_slice;
-    cl_mem device_img;
-    cl_mem device_array;
     cl_mem vector_output_slice;
     cl_kernel kernel;
     gfloat axis_pos;
@@ -164,13 +162,13 @@ ufo_backproject_task_process (UfoTask *task,
         format.image_channel_data_type = CL_FLOAT;
 
         //Work dimension
-        int work_dim = 2;
+        int work_dim = 0;
+        cl_event event;
 
         // Region to copy
         size_t region[3];
         region[0] = requisition->dims[0];
         region[1] = requisition->dims[1];
-        region[2] = requisition->dims[2];
 
         //Source and Destination origins
         size_t src_origin[3];
@@ -178,21 +176,9 @@ ufo_backproject_task_process (UfoTask *task,
         src_origin[1] =  0;
 
         size_t dst_origin[] = { 0, 0, 0 };
-
-        // UfoBuffer to OpenCL device image
-        cl_event event;
-
-        device_img = ufo_buffer_get_device_image(inputs[0],cmd_queue);
-
-        device_array = clCreateBuffer (priv->context, CL_MEM_READ_WRITE,
-                                     requisition->dims[0]*requisition->dims[1]*requisition->dims[2]* sizeof(cl_float), NULL, 0);
-
-        clEnqueueCopyImageToBuffer (cmd_queue, device_img, device_array, dst_origin, region, 0,
-                                  0, NULL, &event);
-
-        UFO_RESOURCES_CHECK_CLERR (clWaitForEvents (1, &event));
-        UFO_RESOURCES_CHECK_CLERR (clReleaseEvent (event));
-
+        fprintf(stdout,"before ufo_buffer_get_device_image \n");
+        cl_mem device_image = ufo_buffer_get_device_image(inputs[0],cmd_queue);
+        fprintf(stdout,"after ufo_buffer_get_device_image \n");
         // To process arbitrary number of sinograms
         gsize it = 0;                       // offset @ Z dimension at global
         gsize z_dim = requisition->dims[2]; // whether to create a 2D or 3D input
@@ -208,21 +194,16 @@ ufo_backproject_task_process (UfoTask *task,
         while (it < requisition->dims[2]){  // check if all slices have been processed
             if(z_dim < 4){
                 incr = 1;                   // when the #slices < 4, just reconstruct the slice
-                in_mem = clCreateImage2D(priv->context,
-                                         CL_MEM_READ_WRITE,
-                                         &format,
-                                         requisition->dims[0],
-                                         requisition->dims[1],
-                                         0,
-                                         NULL,0);
+
+                in_mem = clCreateImage2D(priv->context,CL_MEM_READ_WRITE,&format,
+                                requisition->dims[0],requisition->dims[1],0,NULL,0);
 
                 region[2] = incr;
                 src_origin[2] = it;
                 // Copy Image
-                clEnqueueCopyImage(cmd_queue,device_img,in_mem,src_origin,dst_origin,region,0,NULL,&event);
 
-                UFO_RESOURCES_CHECK_CLERR (clWaitForEvents (1, &event));
-                UFO_RESOURCES_CHECK_CLERR (clReleaseEvent (event));
+                clEnqueueCopyImage(cmd_queue,device_image,in_mem,src_origin,
+                                   dst_origin,region,0,NULL,NULL);
 
                 kernel = priv->optimized_kernel_2d;
 
@@ -239,29 +220,26 @@ ufo_backproject_task_process (UfoTask *task,
                 UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(int), &it));
 
                 globalWorkSize[2] = incr;
+                work_dim = 3;
+
                 clEnqueueNDRangeKernel(cmd_queue,kernel,work_dim,0,globalWorkSize,
-                                       NULL,0,NULL,&event);
-                UFO_RESOURCES_CHECK_CLERR (clWaitForEvents (1, &event));
-                UFO_RESOURCES_CHECK_CLERR (clReleaseEvent (event));
+                                       NULL,0,NULL,NULL);
 
             } else{
                 incr = 4;                   // else interleave, reconstruct and uninterleave using vector data types
                 cl_int err;
 
                 // ******* PREPARE THE IMAGE FROM OFFSET ******* //
-                in_mem = clCreateBuffer(priv->context,
-                                        CL_MEM_READ_WRITE,
-                                        requisition->dims[0]*requisition->dims[1]*incr* sizeof(cl_float),
-                                        NULL,&err);
+                in_mem = clCreateImage3D(priv->context,CL_MEM_READ_WRITE,&format,
+                                         requisition->dims[0],requisition->dims[1],incr,
+                                         0,0,NULL,0);
 
                 region[2] = incr;
                 src_origin[2] = it;
                 //Copy Image
-                err = clEnqueueCopyBuffer(cmd_queue,device_array,in_mem,requisition->dims[0]*requisition->dims[1]*it,0,
-                                          requisition->dims[0]*requisition->dims[1]*incr* sizeof(cl_float),0,NULL,&event);
 
-                UFO_RESOURCES_CHECK_CLERR (clWaitForEvents (1, &event));
-                UFO_RESOURCES_CHECK_CLERR (clReleaseEvent (event));
+                clEnqueueCopyImage(cmd_queue,device_image,in_mem,src_origin,dst_origin,region,0,NULL,NULL);
+
 
                 // ******* PREPARE THE VECTOR BUFFER / INTERLEAVE STAGE ******* //
                 vector_slice = clCreateBuffer(priv->context,CL_MEM_READ_WRITE, sizeof(cl_float4)*requisition->dims[0]*requisition->dims[1],NULL,&err);
@@ -274,9 +252,7 @@ ufo_backproject_task_process (UfoTask *task,
                 work_dim = 3;
 
                 clEnqueueNDRangeKernel(cmd_queue,kernel,3,0,globalWorkSize,
-                                       NULL,0,NULL,&event);
-                UFO_RESOURCES_CHECK_CLERR (clWaitForEvents (1, &event));
-                UFO_RESOURCES_CHECK_CLERR (clReleaseEvent (event));
+                                       NULL,0,NULL,NULL);
 
                 // ******* BACKPROJECTION / SINOGRAM RECONSTRUCTION ******* //
                 kernel = priv->optimized_kernel_3d;
@@ -295,21 +271,18 @@ ufo_backproject_task_process (UfoTask *task,
 
                 size_t gSize[2] = {requisition->dims[0],requisition->dims[1]};
                 clEnqueueNDRangeKernel(cmd_queue,kernel,2,0,gSize,NULL,
-                                       0,NULL,&event);
-                UFO_RESOURCES_CHECK_CLERR (clWaitForEvents (1, &event));
-                UFO_RESOURCES_CHECK_CLERR (clReleaseEvent (event));
+                                       0,NULL,NULL);
 
                 // ******* UNINTERLEAVE / PREPARE OUTPUT SLICES ******* //
                 kernel = priv->uninterleave;
-
+                fprintf(stdout,"it: %lu \n",it);
                 clSetKernelArg(kernel, 0, sizeof(cl_mem), &vector_output_slice);
                 clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem);
                 clSetKernelArg(kernel, 2, sizeof(int), &it);
 
 //                ufo_profiler_call(profiler, cmd_queue, kernel, 2, gSize, NULL);
-                clEnqueueNDRangeKernel(cmd_queue,kernel,2,0,gSize,NULL,0,NULL,&event);
-                UFO_RESOURCES_CHECK_CLERR (clWaitForEvents (1, &event));
-                UFO_RESOURCES_CHECK_CLERR (clReleaseEvent (event));
+                clEnqueueNDRangeKernel(cmd_queue,kernel,2,0,gSize,NULL,0,NULL,NULL);
+
             }
             it += incr;                     // count of processed slices
             z_dim -= incr;                  // calculates #unprocessed slices
