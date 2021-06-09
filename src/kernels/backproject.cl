@@ -54,7 +54,6 @@ interleave (read_only image3d_t sinogram,
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
     const int sizex = get_global_size(0);
-
     slices[idy * sizex + idx].x = read_imagef (sinogram, volumeSampler , (int4)(idx, idy,0,0)).x;
     slices[idy * sizex + idx].y = read_imagef (sinogram, volumeSampler , (int4)(idx, idy,1,0)).x;
     slices[idy * sizex + idx].z = read_imagef (sinogram, volumeSampler , (int4)(idx, idy,2,0)).x;
@@ -63,33 +62,52 @@ interleave (read_only image3d_t sinogram,
 
 kernel void
 interleave (global float *sinogram,
-            global float4 *interleaved_vector_sinograms)
+            global float4 *interleaved_vector_sinograms,
+            unsigned long num_slices)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
-    interleaved_vector_sinograms[idy * sizex + idx].x = sinogram[idx + idy*sizey + 0*sizex*sizey];
-    interleaved_vector_sinograms[idy * sizex + idx].y = sinogram[idx + idy*sizey + 1*sizex*sizey];
-    interleaved_vector_sinograms[idy * sizex + idx].z = sinogram[idx + idy*sizey + 2*sizex*sizey];
-    interleaved_vector_sinograms[idy * sizex + idx].w = sinogram[idx + idy*sizey + 3*sizex*sizey];
+    unsigned long temp = num_slices;
+    int sinogram_offset = 0;
+    int interleaved_buffer_offset = 0;
+
+    while(temp >= 4){
+        interleaved_vector_sinograms[interleaved_buffer_offset*sizex*sizey + idy*sizey + idx].x = sinogram[idx + idy*sizey + (sinogram_offset)*sizex*sizey];
+        interleaved_vector_sinograms[interleaved_buffer_offset*sizex*sizey + idy*sizey + idx].y = sinogram[idx + idy*sizey + (sinogram_offset+1)*sizex*sizey];
+        interleaved_vector_sinograms[interleaved_buffer_offset*sizex*sizey + idy*sizey + idx].z = sinogram[idx + idy*sizey + (sinogram_offset+2)*sizex*sizey];
+        interleaved_vector_sinograms[interleaved_buffer_offset*sizex*sizey + idy*sizey + idx].w = sinogram[idx + idy*sizey + (sinogram_offset+3)*sizex*sizey];
+        temp -= 4;
+        sinogram_offset += 4;
+        interleaved_buffer_offset += 1;
+    }
 }
 
 kernel void
-uninterleave (global float4 *reconstructed_buffer,
-global float *output,
-int slice_offset)
+uninterleave (  global float4 *reconstructed_buffer,
+                global float *output,
+                unsigned long num_slices)
 {
-const int idx = get_global_id(0);
-const int idy = get_global_id(1);
-const int sizex = get_global_size(0);
-const int sizey = get_global_size(1);
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+    const int sizex = get_global_size(0);
+    const int sizey = get_global_size(1);
 
-output[idx + idy*sizey + (slice_offset+0)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex].x;
-output[idx + idy*sizey + (slice_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex].y;
-output[idx + idy*sizey + (slice_offset+2)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex].z;
-output[idx + idy*sizey + (slice_offset+3)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex].w;
+    unsigned long temp = num_slices;
+    int buffer_offset = 0;
+    int output_offset = 0;
+
+    while(temp >= 4){
+        output[idx + idy*sizey + (output_offset+0)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + buffer_offset*sizex*sizey].x;
+        output[idx + idy*sizey + (output_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + buffer_offset*sizex*sizey].y;
+        output[idx + idy*sizey + (output_offset+2)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + buffer_offset*sizex*sizey].z;
+        output[idx + idy*sizey + (output_offset+3)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + buffer_offset*sizex*sizey].w;
+        output_offset += 4;
+        buffer_offset += 1;
+        temp -= 4;
+    }
 }
 
 kernel void
@@ -140,17 +158,16 @@ backproject_tex (read_only image2d_t sinogram,
 
 kernel void
 backproject_tex2d (
-                   global float *sinogram,
-//                   read_only image2d_t sinogram,
-                   global float *slice,
-                   constant float *sin_lut,
-                   constant float *cos_lut,
-                   const unsigned int x_offset,
-                   const unsigned int y_offset,
-                   const unsigned int angle_offset,
-                   const unsigned int n_projections,
-                   const float axis_pos,
-                   int z)
+        read_only image2d_t sinogram,
+        global float *slice,
+        constant float *sin_lut,
+        constant float *cos_lut,
+        const unsigned int x_offset,
+        const unsigned int y_offset,
+        const unsigned int angle_offset,
+        const unsigned int n_projections,
+        const float axis_pos,
+        unsigned long z)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
@@ -183,8 +200,7 @@ backproject_tex2d (
 #endif
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-        sum += sinogram[(int)(proj * sizex + h)];
-//        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
+        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
     }
     slice[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
 }
@@ -193,15 +209,17 @@ backproject_tex2d (
 
 kernel void
 backproject_tex3d (
-                    read_only image2d_t sinogram,
-                    global float4 *reconstructed_buffer,
-                    constant float *sin_lut,
-                    constant float *cos_lut,
-                    const unsigned int x_offset,
-                    const unsigned int y_offset,
-                    const unsigned int angle_offset,
-                    const unsigned int n_projections,
-                    const float axis_pos){
+        read_only image2d_t sinogram,
+        global float4 *reconstructed_buffer,
+        constant float *sin_lut,
+        constant float *cos_lut,
+        const unsigned int x_offset,
+        const unsigned int y_offset,
+        const unsigned int angle_offset,
+        const unsigned int n_projections,
+        const float axis_pos,
+        int z){
+
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
 
@@ -211,6 +229,7 @@ backproject_tex3d (
 
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
+
 #ifdef DEVICE_TESLA_K20XM
 #pragma unroll 4
 #endif
@@ -234,7 +253,7 @@ backproject_tex3d (
 #endif
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
+        sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f));
     }
-    reconstructed_buffer[idy * sizex + idx] = sum * M_PI_F / n_projections;
+    reconstructed_buffer[idx + idy*sizey + z*sizex*sizey] = sum * M_PI_F / n_projections;
 }
