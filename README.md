@@ -14,13 +14,16 @@ Implement the algorithm to process an arbitrary number of sinograms instead of p
 
 If the number of sinograms is more than 4, then process 4 slices at a time in three kernels:
 
-* Interleave kernel
+**Interleave kernel**
+
   The kernel is adjusted to use the float4 type, to write the first slice to x component, second to y, third to z and fourth to w component respectively.
 
-* Backprojection kernel
+**Backprojection kernel**
+
   Two distinct processing stages are executed. First the partial sums are computed in an 4-element array. The outer loop starts from the ﬁrst projection assigned   to the current thread and steps over the projections which are processed in parallel. At each iteration the constants are loaded and inner loop is executed to     process 4 pixels.
   
-* Uninterleave kernel
+**Uninterleave kernel**
+
   Write the 4-element reconstructed array to 4 slices.
 
 When the number of sinograms is not a multiple of 4, the remaining slices are processed using the older variant kernel but without iteration of slice at host.
