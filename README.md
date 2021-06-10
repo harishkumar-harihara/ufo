@@ -37,6 +37,9 @@ stack size | older variant | with loop in host | no loop
 
 ![Benchmark results](https://github.com/harishkumar-harihara/ufo/blob/master/Filtered%20back-projection.png)
 
+### Reference
+[1] S. Chilingaryan, E. Ametova, A. Kopmann, and A. Mirone, “Balancing load of gpu subsystems to accelerate image reconstruction in parallel beam tomography,” in 2018 30th International Symposium on Computer Architecture and High Performance Computing (SBAC-PAD), Sep. 2018, pp. 158–166.
+
 ### License
 
 Both ufo-core and ufo-filters are licensed under LGPL 3.
