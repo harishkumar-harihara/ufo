@@ -35,7 +35,7 @@ stack size | older variant | with loop in host | no loop
 8 |	0	| 8.695537 | 2.281061
 16 |	0 |	16.20616 | 2.338949
 
-
+![Benchmark results](https://github.com/harishkumar-harihara/ufo/blob/master/Filtered%20back-projection.png)
 
 ### License
 
