@@ -24,6 +24,15 @@ If the number of sinograms is more than 4, then process 4 slices at a time in th
   Write the 4-element reconstructed array to 4 slices.
 
 When the number of sinograms is not a multiple of 4, the remaining slices are processed using the older variant kernel but without iteration of slice at host.
+For example, to process 15 sinograms at each iteration, first 12 slices are processed using three kernels: interleave-backprojection-uninterleave (process 4-slices) and then remaining 3 slices are processed using backprojection kernel (process slice-wise).
+
+### Results
+stack size | older variant | with loop in host | no loop
+1 |	5.960049 |	0	| 0
+2 |	0	| 5.795506 | 8.886319
+4	| 0	| 4.597504 | 2.264165
+8 |	0	| 8.695537 | 2.281061
+16 |	0 |	16.20616 | 2.338949
 
 ### License
 
