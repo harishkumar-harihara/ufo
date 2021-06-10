@@ -28,6 +28,7 @@ For example, to process 15 sinograms at each iteration, first 12 slices are proc
 
 ### Results
 stack size | older variant | with loop in host | no loop
+-----------|---------------|-------------------|--------
 1 |	5.960049 |	0	| 0
 2 |	0	| 5.795506 | 8.886319
 4	| 0	| 4.597504 | 2.264165
