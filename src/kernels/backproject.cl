@@ -200,6 +200,7 @@ backproject_tex2d (
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
     const int idz = get_global_id(2);
+
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     int output_offset = idz + (int)offset;
@@ -261,33 +262,11 @@ backproject_tex3d (
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
-#ifdef DEVICE_TESLA_K20XM
-#pragma unroll 4
-#endif
-#ifdef DEVICE_TESLA_P100_PCIE_16GB
-#pragma unroll 2
-#endif
-#ifdef DEVICE_GEFORCE_GTX_TITAN_BLACK
-#pragma unroll 8
-#endif
-#ifdef DEVICE_GEFORCE_GTX_TITAN
-#pragma unroll 14
-#endif
-#ifdef DEVICE_GEFORCE_GTX_1080_TI
-#pragma unroll 10
-#endif
-#ifdef DEVICE_QUADRO_M6000
-#pragma unroll 2
-#endif
-#ifdef DEVICE_GFX1010
-#pragma unroll 4
-#endif
-
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f,idz, 0.0));
     }
-    reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
+   // reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
 }
 
 
@@ -323,50 +302,53 @@ quadrant, and pixel within quadrant */
 /* Computing projection and pixel offsets */
     int projection_index = local_idy/4; // m p = m t .y / 4
     /* mt.x = 4 ∗ square + 2 ∗ (quadrant % 2) + (pixel % 2), mt.y = 2 ∗ (quadrant / 2) + (pixel / 2) */
-    int2 remapped_index = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
+    int2 blockThread_idx = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
 //    int2 remapped_index_new = {0,0};
 
 /* Computing pixel coordinates */
-   int2 grid_index = {get_group_id(0)*local_sizex+get_local_id(0),get_group_id(1)*local_sizey+get_local_id(1)};     // mg = mb ∗ nt + mt
-   float2 pixel_coord = {grid_index.x-axis_pos, grid_index.y-axis_pos}; //fg = mg - va
+//   int2 gridThread_index = {get_group_id(0)*local_sizex+get_local_id(0),get_group_id(1)*local_sizey+get_local_id(1)};     // mg = mb ∗ nt + mt
+   float2 pixel_coord = {global_idx-axis_pos+0.5, global_idy-axis_pos+0.5}; //fg = mg - va
 
     float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
     __local float4 cache[64][4]; //ss
     __local float4 reconstructed_cache[16][16]; //rs
-//    __local float temp_reconstructed_cache[16][16];
     __local float temp[4];
 
     for(int proj = projection_index; proj < n_projections; proj+=4) {
-        float sine_value = sin_lut[proj]; // this is sine of projection, but what is y here, at the type is float not float2
-        float h = axis_pos + pixel_coord.x * cos_lut[proj] - pixel_coord.y * sin_lut[proj] + 0.5f;
+        float sine_value = sin_lut[angle_offset + proj]; // this is sine of projection, but what is y here, at the type is float not float2
+        float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + 0.5f;
         for(int q=0; q<4; q+=1){
             sum[q] += read_imagef (sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
         }
     }
 
-     /*Reduction */
-    int2 remapped_index_new = {(local_idx%4), (4*local_idy + local_idx/4)};
-    int2 block_size = {local_sizex,local_sizey}; //nt = Dimensions of thread block
+    /* Reduction */
+    int2 remapped_index = {(local_idx%4), (4*local_idy + local_idx/4)};
 
-//    uint2 mask = (uint2)(2,1);
     for(int q=0; q<4;q+=1){
-         /*Moving partial sums to shared memory */
-        cache[(local_sizex*remapped_index.y + remapped_index.x)][projection_index] = sum[q];
+         /* Moving partial sums to shared memory */
+        cache[(local_sizex*blockThread_idx.y + blockThread_idx.x)][projection_index] = sum[q]*M_PI_F/(n_projections/4);
 
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
-         /*Performing reduction */
-         temp[0] = cache[remapped_index.y][remapped_index.x].x;
-         temp[1] = cache[remapped_index.y][remapped_index.x].y;
-         temp[2] = cache[remapped_index.y][remapped_index.x].z;
-         temp[3] = cache[remapped_index.y][remapped_index.x].w;
-        for(int i=2; i>=1; i/=2){
-         temp[remapped_index_new.x] = temp[remapped_index_new.x + i] ;
+
+        /* Performing reduction */
+        temp[0] = cache[blockThread_idx.y][blockThread_idx.x].x;
+        temp[1] = cache[blockThread_idx.y][blockThread_idx.x].y;
+        temp[2] = cache[blockThread_idx.y][blockThread_idx.x].z;
+        temp[3] = cache[blockThread_idx.y][blockThread_idx.x].w;
+
+        for(int i=2; i>1; i/=2){
+            if(remapped_index.x < i){
+               temp[remapped_index.x] += temp[remapped_index.x + i];
+            }
         }
-         /*Grouping results in shared memory to coalesce global memory writes */
-        if(remapped_index_new.x == 0){
-            reconstructed_cache[4*q+remapped_index_new.y/16][remapped_index_new.y%16] = temp[0];
+
+        /* Grouping results in shared memory to coalesce global memory writes */
+        if(remapped_index.x == 0){
+            reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = temp[0];
         }
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
+
     }
     reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
