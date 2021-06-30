@@ -138,7 +138,7 @@ uninterleave (  global float4 *reconstructed_buffer,
     output[idx + idy*sizey + (output_offset+3)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].w;
 }
 
-kernel void
+/*kernel void
 backproject_tex (read_only image2d_t sinogram,
                  global float *slice,
                  constant float *sin_lut,
@@ -182,6 +182,63 @@ backproject_tex (read_only image2d_t sinogram,
     }
 
     slice[idy * get_global_size(0) + idx] = sum * M_PI_F / n_projections;
+} */
+
+kernel void
+backproject_tex (read_only image2d_t sinogram,
+                 global float *slice,
+                 constant float *sin_lut,
+                 constant float *cos_lut,
+                 const unsigned int x_offset,
+                 const unsigned int y_offset,
+                 const unsigned int angle_offset,
+                 const unsigned int n_projections,
+                 const float axis_pos){
+
+    const int local_idx = get_local_id(0);
+    const int global_idx = get_global_id(0);
+    const int local_idy = get_local_id(1);
+    const int global_idy = get_global_id(1);
+
+    int local_sizex = get_local_size(0);
+    int global_sizex = get_global_size(0);
+    int local_sizey = get_local_size(1);
+    int global_sizey = get_global_size(1);
+
+    int square = local_idy%4;    // square = m t .y % 4
+    int quadrant = local_idx/4;  // quadrant = m t .x / 4
+    int pixel = local_idx%4;     // pixel = m t .x % 4
+
+    int projection_index = local_idy/4;
+    int2 blockThread_idx = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
+
+    float2 pixel_coord = {global_idx-axis_pos+0.5f, global_idy-axis_pos+0.5f};
+
+    float sum[4] = {0.0f,0.0f,0.0f,0.0f};
+    __local float cache[64][4];
+    __local float reconstructed_cache[16][16];
+
+    for(int proj = projection_index; proj < n_projections; proj+=4) {
+            float sine_value = sin_lut[angle_offset + proj];
+            float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
+            for(int q=0; q<4; q+=1){
+                sum[q] += read_imagef (sinogram, volumeSampler, (float2)(h-4*q*sine_value, proj + 0.5f)).x;
+            }
+    }
+
+    int2 remapped_index = {(local_idx%4), (4*local_idy + local_idx/4)};
+
+    for(int q=0; q<4; q+=1){
+       cache[(local_sizex*blockThread_idx.y + blockThread_idx.x)][projection_index] = sum[q];
+
+       barrier(CLK_LOCAL_MEM_FENCE);
+
+       reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = cache[blockThread_idx.y][blockThread_idx.x];
+
+       barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    slice[global_idy * global_sizex + global_idx] = reconstructed_cache[local_idy][local_idx];
 }
 
 kernel void
@@ -236,8 +293,6 @@ backproject_tex2d (
     slice[idx + idy*sizey + output_offset*sizex*sizey] = sum * M_PI_F / n_projections;
 }
 
-
-
 kernel void
 backproject_tex3d (
         read_only image2d_array_t sinogram,
@@ -256,7 +311,6 @@ backproject_tex3d (
 
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
-//    const float bz = idz/4.0;
     float4 sum = {0.0f,0.0f,0.0f,0.0f};
 
     const int sizex = get_global_size(0);
@@ -266,9 +320,8 @@ backproject_tex3d (
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f,idz, 0.0));
     }
-   // reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
+    reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
 }
-
 
 kernel void
 texture (
@@ -293,62 +346,40 @@ texture (
     int local_sizey = get_local_size(1);
     int global_sizey = get_global_size(1);
 
-/* Computing sequential numbers of 4x4 square,
-quadrant, and pixel within quadrant */
-    int square = local_idy%4;    // square = m t .y % 4
-    int quadrant = local_idx/4;  // quadrant = m t .x / 4
-    int pixel = local_idx%4;     // pixel = m t .x % 4
+    int square = local_idy%4;
+    int quadrant = local_idx/4;
+    int pixel = local_idx%4;
+    int projection_index = local_idy/4;
 
-/* Computing projection and pixel offsets */
-    int projection_index = local_idy/4; // m p = m t .y / 4
-    /* mt.x = 4 ∗ square + 2 ∗ (quadrant % 2) + (pixel % 2), mt.y = 2 ∗ (quadrant / 2) + (pixel / 2) */
     int2 blockThread_idx = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
-//    int2 remapped_index_new = {0,0};
-
-/* Computing pixel coordinates */
-//   int2 gridThread_index = {get_group_id(0)*local_sizex+get_local_id(0),get_group_id(1)*local_sizey+get_local_id(1)};     // mg = mb ∗ nt + mt
-   float2 pixel_coord = {global_idx-axis_pos+0.5, global_idy-axis_pos+0.5}; //fg = mg - va
+    float2 pixel_coord = {global_idx-axis_pos, global_idy-axis_pos};
 
     float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
-    __local float4 cache[64][4]; //ss
-    __local float4 reconstructed_cache[16][16]; //rs
-    __local float temp[4];
+    __local float4 shared_mem[64][4];
+    __local float4 reconstructed_cache[16][16];
 
-    for(int proj = projection_index; proj < n_projections; proj+=4) {
-        float sine_value = sin_lut[angle_offset + proj]; // this is sine of projection, but what is y here, at the type is float not float2
-        float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + 0.5f;
+    for(int proj = projection_index; proj < n_projections; proj++) {
+        float sine_value = sin_lut[angle_offset + proj];
+        float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] + pixel_coord.y * sin_lut[angle_offset + proj];
         for(int q=0; q<4; q+=1){
             sum[q] += read_imagef (sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
         }
     }
 
-    /* Reduction */
     int2 remapped_index = {(local_idx%4), (4*local_idy + local_idx/4)};
 
     for(int q=0; q<4;q+=1){
-         /* Moving partial sums to shared memory */
-        cache[(local_sizex*blockThread_idx.y + blockThread_idx.x)][projection_index] = sum[q]*M_PI_F/(n_projections/4);
+        /* Moving partial sums to shared memory */
+        shared_mem[(local_sizex*blockThread_idx.y + blockThread_idx.x)][projection_index] = sum[q];
 
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
 
-        /* Performing reduction */
-        temp[0] = cache[blockThread_idx.y][blockThread_idx.x].x;
-        temp[1] = cache[blockThread_idx.y][blockThread_idx.x].y;
-        temp[2] = cache[blockThread_idx.y][blockThread_idx.x].z;
-        temp[3] = cache[blockThread_idx.y][blockThread_idx.x].w;
+        reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = shared_mem[blockThread_idx.x][blockThread_idx.y];
 
-        for(int i=2; i>1; i/=2){
-            if(remapped_index.x < i){
-               temp[remapped_index.x] += temp[remapped_index.x + i];
-            }
-        }
-
-        /* Grouping results in shared memory to coalesce global memory writes */
-        if(remapped_index.x == 0){
-            reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = temp[0];
-        }
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
-
     }
-    reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
+    reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = (reconstructed_cache[local_idy][local_idx]);
 }
+
+
+

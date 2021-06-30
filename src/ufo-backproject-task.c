@@ -170,7 +170,11 @@ ufo_backproject_task_process (UfoTask *task,
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 7, sizeof (guint),  &priv->burst_projections));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 8, sizeof (gfloat), &axis_pos));
 
-        ufo_profiler_call (profiler, cmd_queue, kernel, 2, requisition->dims, NULL);
+
+        size_t localSize[2] = {16,16};
+        ufo_profiler_call (profiler, cmd_queue, kernel, 2, requisition->dims, localSize);
+/*        cl_int err = clEnqueueNDRangeKernel(cmd_queue,kernel,2,0,requisition->dims,localSize,0,NULL,NULL);
+        fprintf(stdout, "Error code: %d \n",err);*/
     }
     else{
 
@@ -240,7 +244,6 @@ ufo_backproject_task_process (UfoTask *task,
             kernel = priv->texture_engine_kernel;
 
             reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE,
-//                                                  sizeof(float)*16*16,
                                                   sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient,
                                                   NULL, 0);
 
@@ -259,6 +262,7 @@ ufo_backproject_task_process (UfoTask *task,
             size_t lSize[3] = {16,16,1};
 //            cl_int err = clEnqueueNDRangeKernel(cmd_queue,kernel,3,0,gSize,lSize,0,NULL,NULL);
             ufo_profiler_call(profiler, cmd_queue, kernel, 3, gSize, lSize);
+
 
             /*UNINTERLEAVE*/
             kernel = priv->uninterleave;
