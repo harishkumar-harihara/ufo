@@ -233,7 +233,14 @@ backproject_tex (read_only image2d_t sinogram,
 
        barrier(CLK_LOCAL_MEM_FENCE);
 
-       reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = cache[blockThread_idx.y][blockThread_idx.x];
+       float r = cache[(local_sizex*blockThread_idx.y + blockThread_idx.x)][0] +
+                 cache[(local_sizex*blockThread_idx.y + blockThread_idx.x)][1] +
+                 cache[(local_sizex*blockThread_idx.y + blockThread_idx.x)][2] +
+                 cache[(local_sizex*blockThread_idx.y + blockThread_idx.x)][3];
+
+       if(remapped_index.x == 0){
+        reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = r;
+       }
 
        barrier(CLK_LOCAL_MEM_FENCE);
     }
