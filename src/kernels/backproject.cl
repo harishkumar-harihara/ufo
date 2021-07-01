@@ -320,7 +320,7 @@ backproject_tex3d (
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f,idz, 0.0));
     }
-    reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
+    reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey] = sum;
 }
 
 kernel void
@@ -358,7 +358,7 @@ texture (
     __local float4 shared_mem[64][4];
     __local float4 reconstructed_cache[16][16];
 
-    for(int proj = projection_index; proj < n_projections; proj++) {
+    for(int proj = projection_index; proj < n_projections; proj+=4) {
         float sine_value = sin_lut[angle_offset + proj];
         float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] + pixel_coord.y * sin_lut[angle_offset + proj];
         for(int q=0; q<4; q+=1){
@@ -373,9 +373,16 @@ texture (
         shared_mem[(local_sizex*blockThread_idx.y + blockThread_idx.x)][projection_index] = sum[q];
 
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
+        float4 r={0.0f,0.0f,0.0f,0.0f};
 
-        reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = shared_mem[blockThread_idx.x][blockThread_idx.y];
+        r = shared_mem[(local_sizex*blockThread_idx.y + blockThread_idx.x)][0] +
+            shared_mem[(local_sizex*blockThread_idx.y + blockThread_idx.x)][1] +
+            shared_mem[(local_sizex*blockThread_idx.y + blockThread_idx.x)][2] +
+            shared_mem[(local_sizex*blockThread_idx.y + blockThread_idx.x)][3];
 
+        if(remapped_index.x == 0){
+            reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = r;
+        }
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
     }
     reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = (reconstructed_cache[local_idy][local_idx]);
