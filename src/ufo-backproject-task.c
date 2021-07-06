@@ -247,7 +247,6 @@ ufo_backproject_task_process (UfoTask *task,
                                                   sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient,
                                                   NULL, 0);
 
-
             clSetKernelArg(kernel, 0, sizeof(cl_mem), &interleaved_img);
             clSetKernelArg(kernel, 1, sizeof(cl_mem), &reconstructed_buffer);
             clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut);
@@ -262,7 +261,6 @@ ufo_backproject_task_process (UfoTask *task,
             size_t lSize[3] = {16,16,1};
 //            cl_int err = clEnqueueNDRangeKernel(cmd_queue,kernel,3,0,gSize,lSize,0,NULL,NULL);
             ufo_profiler_call(profiler, cmd_queue, kernel, 3, gSize, lSize);
-
 
             /*UNINTERLEAVE*/
             kernel = priv->uninterleave;
@@ -311,7 +309,7 @@ ufo_backproject_task_process (UfoTask *task,
     clGetMemObjectInfo(out_mem, CL_MEM_SIZE,
                        sizeof(temp_size), &temp_size, NULL);
     priv->out_mem_size += temp_size;
-//    fprintf(stdout, "Time taken GPU: %f Size: %zu \n", ufo_profiler_elapsed(profiler,UFO_PROFILER_TIMER_GPU),priv->out_mem_size);
+    fprintf(stdout, "Time taken GPU: %f Size: %zu \n", ufo_profiler_elapsed(profiler,UFO_PROFILER_TIMER_GPU),priv->out_mem_size);
     return TRUE;
 }
 
