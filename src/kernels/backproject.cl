@@ -20,7 +20,7 @@
 
 constant sampler_t volumeSampler = CLK_NORMALIZED_COORDS_FALSE |
                                    CLK_ADDRESS_CLAMP_TO_EDGE |
-                                   CLK_FILTER_NEAREST ;
+                                   CLK_FILTER_LINEAR ;
 
 
 kernel void

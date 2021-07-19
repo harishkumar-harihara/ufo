@@ -127,14 +127,14 @@ ufo_backproject_task_process (UfoTask *task,
     UfoProfiler *profiler;
     cl_command_queue cmd_queue;
     cl_mem in_mem;
-    cl_mem img_2d;
     cl_mem interleaved_img;
     cl_mem out_mem;
-    cl_mem cache_buffer;
     cl_mem reconstructed_buffer;
-    cl_mem reconstructed_local;
-    cl_mem temp_reconstructed_local;
     cl_kernel kernel;
+    cl_kernel kernel_interleave;
+    cl_kernel kernel_texture;
+    cl_kernel kernel_uninterleave;
+    size_t buffer_size;
     gfloat axis_pos;
 
     priv = UFO_BACKPROJECT_TASK (task)->priv;
@@ -179,15 +179,13 @@ ufo_backproject_task_process (UfoTask *task,
 
         size_t localSize[2] = {16,16};
         ufo_profiler_call (profiler, cmd_queue, kernel, 2, requisition->dims, localSize);
-/*        cl_int err = clEnqueueNDRangeKernel(cmd_queue,kernel,2,0,requisition->dims,localSize,0,NULL,NULL);
-        fprintf(stdout, "Error code: %d \n",err);*/
     }
     else{
 
         // Image format
         cl_image_format format;
-//        format.image_channel_data_type = CL_FLOAT;
-        format.image_channel_data_type = CL_HALF_FLOAT;
+        format.image_channel_data_type = CL_FLOAT;
+//        format.image_channel_data_type = CL_HALF_FLOAT;
 
         // Region to copy
         size_t region[3];
@@ -210,9 +208,23 @@ ufo_backproject_task_process (UfoTask *task,
         gWorkSize_2d[0] = gWorkSize_3d[0] = requisition->dims[0];
         gWorkSize_2d[1] = gWorkSize_3d[1] = requisition->dims[1];
 
-        unsigned long quotient = requisition->dims[2]/2;
-        unsigned long remainder = requisition->dims[2]%2;
-        unsigned long offset = requisition->dims[2] - remainder;
+        unsigned long quotient;
+
+        if(requisition->dims[2]==2){
+            quotient = requisition->dims[2]/2;
+            kernel_interleave = priv->interleave_float2;
+            kernel_texture = priv->texture_float2;
+            kernel_uninterleave = priv->uninterleave_float2;
+            format.image_channel_order = CL_RG;
+            buffer_size = sizeof(cl_float2) * requisition->dims[0] * requisition->dims[1] * quotient;
+        }else{
+            quotient = requisition->dims[2]/4;
+            kernel_interleave = priv->interleave_float4;
+            kernel_texture = priv->texture_float4;
+            kernel_uninterleave = priv->uninterleave_float4;
+            format.image_channel_order = CL_RGBA;
+            buffer_size = sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient;
+        }
 
         size_t regionToCopy[3];
         regionToCopy[0] = requisition->dims[0];
@@ -230,94 +242,41 @@ ufo_backproject_task_process (UfoTask *task,
         imageDesc.num_samples = 0;
         imageDesc.buffer = NULL;
 
-/*        cl_mem dev_halfarray = clCreateBuffer(priv->context,CL_MEM_READ_WRITE,
-                       sizeof(cl_half)*requisition->dims[0]*requisition->dims[1]*requisition->dims[2],
-                       NULL,0);
-
-        cl_int err = clEnqueueCopyBuffer(cmd_queue,device_array,dev_halfarray,0,0,
-                            sizeof(cl_half)*requisition->dims[0]*requisition->dims[1]*requisition->dims[2],0,NULL,NULL);
-
-        fprintf(stdout, "Error: %d \n",err);*/
-
         /* PROCESS INTERLEAVE STAGE */
-        if(quotient > 0) {
-            kernel = priv->interleave_float2;
+        interleaved_img = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
 
-            // output of interleave stage, each 4 slice is packed into a single slice with 4 elements
-            // so 8 slices are packed into 2 Z slice with 4 elements
-//            format.image_channel_order = CL_RGBA;           // for float4
-            format.image_channel_order = CL_RG;           // for float2
-            interleaved_img = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
+        clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &device_array);
+        clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img);
 
-            clSetKernelArg(kernel, 0, sizeof(cl_mem), &device_array);
-            clSetKernelArg(kernel, 1, sizeof(cl_mem), &interleaved_img);
+        gWorkSize_3d[2] = quotient; // use 4 times less threads across z-dimension
+        ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gWorkSize_3d, NULL);
 
-            gWorkSize_3d[2] = quotient; // use 4 times less threads across z-dimension
-            ufo_profiler_call(profiler, cmd_queue, kernel, 3, gWorkSize_3d, NULL);
+        /* SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES */
+        reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE, buffer_size,NULL, 0);
 
-            /* SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES */
-//            kernel = priv->texture_engine_kernel;
-            kernel = priv->texture_float2;
+        clSetKernelArg(kernel_texture, 0, sizeof(cl_mem), &interleaved_img);
+        clSetKernelArg(kernel_texture, 1, sizeof(cl_mem), &reconstructed_buffer);
+        clSetKernelArg(kernel_texture, 2, sizeof(cl_mem), &priv->sin_lut);
+        clSetKernelArg(kernel_texture, 3, sizeof(cl_mem), &priv->cos_lut);
+        clSetKernelArg(kernel_texture, 4, sizeof(guint), &priv->roi_x);
+        clSetKernelArg(kernel_texture, 5, sizeof(guint), &priv->roi_y);
+        clSetKernelArg(kernel_texture, 6, sizeof(guint), &priv->offset);
+        clSetKernelArg(kernel_texture, 7, sizeof(guint), &priv->burst_projections);
+        clSetKernelArg(kernel_texture, 8, sizeof(gfloat), &axis_pos);
 
-            reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE,
-//                                                  sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient,  // for float4
-                                                  sizeof(cl_float2) * requisition->dims[0] * requisition->dims[1] * quotient,  // for float2
-//                                                  sizeof(cl_half4) * requisition->dims[0] * requisition->dims[1] * quotient, // for half4
-                                                  NULL, 0);
+        size_t gSize[3] = {requisition->dims[0], requisition->dims[1], quotient};
+        size_t lSize[3] = {16,16,1};
+        ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gSize, lSize);
 
-            clSetKernelArg(kernel, 0, sizeof(cl_mem), &interleaved_img);
-            clSetKernelArg(kernel, 1, sizeof(cl_mem), &reconstructed_buffer);
-            clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut);
-            clSetKernelArg(kernel, 3, sizeof(cl_mem), &priv->cos_lut);
-            clSetKernelArg(kernel, 4, sizeof(guint), &priv->roi_x);
-            clSetKernelArg(kernel, 5, sizeof(guint), &priv->roi_y);
-            clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset);
-            clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections);
-            clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos);
+        /*UNINTERLEAVE*/
+        clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);
+        clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem);
 
-            size_t gSize[3] = {requisition->dims[0], requisition->dims[1], quotient};
-            size_t lSize[3] = {16,16,1};
-            ufo_profiler_call(profiler, cmd_queue, kernel, 3, gSize, lSize);
+        size_t gSize_uninterleave[3] = {requisition->dims[0], requisition->dims[1], quotient};
 
-            /*UNINTERLEAVE*/
-            kernel = priv->uninterleave_float2;
-
-            clSetKernelArg(kernel, 0, sizeof(cl_mem), &reconstructed_buffer);
-            clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem);
-
-            size_t gSize_uninterleave[3] = {requisition->dims[0], requisition->dims[1], quotient};
-
-            ufo_profiler_call(profiler, cmd_queue, kernel, 3, gSize_uninterleave, NULL);
-            clReleaseMemObject(interleaved_img);
-            clReleaseMemObject(reconstructed_buffer);
-        }
-
-        /* RECONSTRUCT 2D SLICES */
-        if(remainder > 0) {
-            imageDesc.image_array_size = remainder;
-            format.image_channel_order = CL_INTENSITY;
-            img_2d = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
-
-            region[2] = remainder;
-            clEnqueueCopyBufferToImage(cmd_queue,device_array,img_2d,requisition->dims[0]*requisition->dims[1]*offset,
-                                       dst_origin,region,0,NULL,NULL);
-
-            kernel = priv->optimized_kernel_2d;
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 0, sizeof(cl_mem), &img_2d));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 1, sizeof(cl_mem), &out_mem));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 2, sizeof(cl_mem), &priv->sin_lut));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 3, sizeof(cl_mem), &priv->cos_lut));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 4, sizeof(guint), &priv->roi_x));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 5, sizeof(guint), &priv->roi_y));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 6, sizeof(guint), &priv->offset));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 7, sizeof(guint), &priv->burst_projections));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 8, sizeof(gfloat), &axis_pos));
-            UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(kernel, 9, sizeof(unsigned long), &offset));
-
-            gWorkSize_3d[2] = remainder;
-            ufo_profiler_call(profiler, cmd_queue, kernel, 3, gWorkSize_3d, NULL);
-            clReleaseMemObject(img_2d);
-        }
+        ufo_profiler_call(profiler, cmd_queue, kernel_uninterleave, 3, gSize_uninterleave, NULL);
+        clReleaseMemObject(interleaved_img);
+        clReleaseMemObject(reconstructed_buffer);
     }
 
     size_t temp_size;
