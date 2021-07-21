@@ -98,10 +98,10 @@ uninterleave_float4 (  global float4 *reconstructed_buffer,
     const int sizey = get_global_size(1);
     int output_offset = idz*4;
 
-    output[idx + idy*sizey + (output_offset)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].x;
-    output[idx + idy*sizey + (output_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].y;
-    output[idx + idy*sizey + (output_offset+2)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].z;
-    output[idx + idy*sizey + (output_offset+3)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].w;
+    output[idx + idy*sizey + (output_offset)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].w;
+    output[idx + idy*sizey + (output_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].z;
+    output[idx + idy*sizey + (output_offset+2)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].y;
+    output[idx + idy*sizey + (output_offset+3)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].x;
 }
 
 kernel void
@@ -283,7 +283,7 @@ texture_float4 (
     int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                     (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
-    float2 pixel_coord = {(remapped_index_global.x-axis_pos), (remapped_index_global.y-axis_pos)};
+    float2 pixel_coord = {(remapped_index_global.x-axis_pos), (remapped_index_global.y-axis_pos)}; //bx and by
 
     float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
     __local float4 shared_mem[64][4];
@@ -292,7 +292,8 @@ texture_float4 (
 
     for(int proj = projection_index; proj < n_projections; proj+=4) {
         float sine_value = sin_lut[angle_offset + proj];
-        float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + 0.5f;
+        float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos + 0.5f;
+        // float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + 0.5f;
         for(int q=0; q<4; q+=1){
            sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
         }
@@ -399,7 +400,7 @@ texture_float2 (
 }
 
 /* kernel void
-texture_half4 (
+texture_ (
         read_only image2d_array_t sinogram,
         global half4 *reconstructed_buffer,
         constant float *sin_lut,
