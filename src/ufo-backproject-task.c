@@ -152,6 +152,8 @@ ufo_backproject_task_process (UfoTask *task,
     cl_mem interleaved_img;
     cl_mem out_mem;
     cl_mem reconstructed_buffer;
+/*    cl_mem reconstructed_buffer1;
+    cl_mem reconstructed_buffer2;*/
     cl_kernel kernel;
     cl_kernel kernel_interleave;
     cl_kernel kernel_texture;
@@ -276,7 +278,6 @@ ufo_backproject_task_process (UfoTask *task,
         imageDesc.buffer = NULL;
 
         if(quotient > 0) {
-
 //            ufo_buffer_max(inputs[0],cmd_queue);
 
             /* PROCESS INTERLEAVE STAGE */
@@ -305,7 +306,7 @@ ufo_backproject_task_process (UfoTask *task,
             size_t lSize[3] = {16, 16, 1};
             ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gSize, lSize);
 
-            /*UNINTERLEAVE*/
+         /*UNINTERLEAVE*/
             clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);
             clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem);
 
