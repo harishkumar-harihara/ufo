@@ -52,12 +52,14 @@ static GEnumValue precision_values[] = {
 
 typedef enum {
     FLOAT2,
-    FLOAT4
+    FLOAT4,
+    UINT
 } VectorLen;
 
 static GEnumValue vector_lengths[] = {
         {FLOAT2, "FLOAT2", "float2"},
-        {FLOAT4, "FLOAT4", "float4"}
+        {FLOAT4, "FLOAT4", "float4"},
+        {UINT, "UINT", "uint"}
 };
 
 struct _UfoBackprojectTaskPrivate {
@@ -68,10 +70,15 @@ struct _UfoBackprojectTaskPrivate {
     cl_kernel optimized_kernel_3d;
     cl_kernel interleave_float4;
     cl_kernel interleave_float2;
+    cl_kernel interleave_uint;
     cl_kernel uninterleave_float4;
     cl_kernel uninterleave_float2;
+    cl_kernel uninterleave_uint;
     cl_kernel texture_float4;
     cl_kernel texture_float2;
+    cl_kernel texture_uint;
+    cl_kernel sort;
+    cl_kernel normalize;
     cl_mem sin_lut;
     cl_mem cos_lut;
     gfloat *host_sin_lut;
@@ -152,12 +159,12 @@ ufo_backproject_task_process (UfoTask *task,
     cl_mem interleaved_img;
     cl_mem out_mem;
     cl_mem reconstructed_buffer;
-/*    cl_mem reconstructed_buffer1;
-    cl_mem reconstructed_buffer2;*/
+
     cl_kernel kernel;
     cl_kernel kernel_interleave;
     cl_kernel kernel_texture;
     cl_kernel kernel_uninterleave;
+    cl_mem normalized_vec;
     size_t buffer_size;
     gfloat axis_pos;
 
@@ -215,6 +222,7 @@ ufo_backproject_task_process (UfoTask *task,
             format.image_channel_data_type = CL_FLOAT;
         }
 
+
         // Region to copy
         size_t region[3];
         region[0] = requisition->dims[0];
@@ -258,6 +266,17 @@ ufo_backproject_task_process (UfoTask *task,
             format.image_channel_order = CL_RGBA;
             buffer_size = sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient;
         }
+        if(priv->vector_len == UINT){
+            quotient = requisition->dims[2]/4;
+            remainder = requisition->dims[2]%4;
+            kernel_interleave = priv->interleave_uint;
+            kernel_texture = priv->texture_uint;
+            kernel_uninterleave = priv->uninterleave_uint;
+            format.image_channel_data_type = CL_UNSIGNED_INT8;
+            format.image_channel_order = CL_RGBA;
+            buffer_size = sizeof(cl_uint4) * requisition->dims[0] * requisition->dims[1] * quotient;
+        }
+
 
         offset = requisition->dims[2] - remainder;
 
@@ -277,13 +296,39 @@ ufo_backproject_task_process (UfoTask *task,
         imageDesc.num_samples = 0;
         imageDesc.buffer = NULL;
 
+        gfloat min_element = FLT_MAX;
+        gfloat max_element = FLT_MIN;
+
         if(quotient > 0) {
-//            ufo_buffer_max(inputs[0],cmd_queue);
+            gfloat *host = ufo_buffer_get_host_array(inputs[0], cmd_queue);
+            min_element = ufo_buffer_min(inputs[0], cmd_queue);
+            max_element = ufo_buffer_max(inputs[0], cmd_queue);
+//            fprintf(stdout, "Min: %f \t Max: %f \n",min_element,max_element);
+
+            // Normalize fp32 to uint
+            if(priv->vector_len == UINT) {
+                normalized_vec = clCreateBuffer(priv->context, CL_MEM_READ_WRITE,
+                                                sizeof(unsigned int) * requisition->dims[0] * requisition->dims[1] *
+                                                requisition->dims[2], NULL, 0);
+
+                kernel = priv->normalize;
+                clSetKernelArg(kernel, 0, sizeof(cl_mem), &device_array);
+                clSetKernelArg(kernel, 1, sizeof(cl_mem), &normalized_vec);
+                clSetKernelArg(kernel, 2, sizeof(gfloat), &min_element);
+                clSetKernelArg(kernel, 3, sizeof(gfloat), &max_element);
+
+                size_t globalWS[3] = {requisition->dims[0], requisition->dims[1], requisition->dims[2]};
+                ufo_profiler_call(profiler, cmd_queue, kernel, 3, globalWS, NULL);
+            }
 
             /* PROCESS INTERLEAVE STAGE */
             interleaved_img = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
 
-            clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &device_array);
+            if(priv->vector_len == UINT){
+                clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &normalized_vec);
+            }else{
+                clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &device_array);
+            }
             clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img);
 
             gWorkSize_3d[2] = quotient; // use 4 times less threads across z-dimension
@@ -306,9 +351,26 @@ ufo_backproject_task_process (UfoTask *task,
             size_t lSize[3] = {16, 16, 1};
             ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gSize, lSize);
 
-         /*UNINTERLEAVE*/
+/*            if(priv->vector_len == UINT){
+                cl_uint4* hostData;
+                hostData = (cl_uint4*) malloc(buffer_size);
+                clEnqueueReadBuffer(cmd_queue,reconstructed_buffer,CL_TRUE,0,buffer_size,hostData,0,NULL,NULL);
+                fprintf(stdout,"Reconstructed buffer: %d \t %d \t %d \t %d \n",hostData[0].x,hostData[0].y,hostData[0].z,hostData[0].w);
+            }else{
+                cl_float4* hostData;
+                hostData = (cl_float4*) malloc(buffer_size);
+                clEnqueueReadBuffer(cmd_queue,reconstructed_buffer,CL_TRUE,0,buffer_size,hostData,0,NULL,NULL);
+                fprintf(stdout,"Reconstructed buffer: %f \t %f \t %f \t %f \n",hostData[0].x,hostData[0].y,hostData[0].z,hostData[0].w);
+            }*/
+
+
+            /*UNINTERLEAVE*/
             clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);
             clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem);
+            if(priv->vector_len == UINT){
+                clSetKernelArg(kernel_uninterleave, 2, sizeof(gfloat), &min_element);
+                clSetKernelArg(kernel_uninterleave, 3, sizeof(gfloat), &max_element);
+            }
 
             size_t gSize_uninterleave[3] = {requisition->dims[0], requisition->dims[1], quotient};
 
@@ -376,6 +438,12 @@ ufo_backproject_task_setup (UfoTask *task,
     priv->texture_float2 = ufo_resources_get_kernel (resources, "backproject.cl", "texture_float2", NULL, error);
     priv->uninterleave_float2 = ufo_resources_get_kernel (resources, "backproject.cl", "uninterleave_float2", NULL, error);
 
+    priv->sort = ufo_resources_get_kernel (resources, "backproject.cl", "sort", NULL, error);
+    priv->normalize = ufo_resources_get_kernel (resources, "backproject.cl", "normalize_vec", NULL, error);
+    priv->interleave_uint = ufo_resources_get_kernel (resources, "backproject.cl", "interleave_uint", NULL, error);
+    priv->texture_uint = ufo_resources_get_kernel (resources, "backproject.cl", "texture_uint", NULL, error);
+    priv->uninterleave_uint = ufo_resources_get_kernel (resources, "backproject.cl", "uninterleave_uint", NULL, error);
+
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainContext (priv->context), error);
 
     if (priv->nearest_kernel != NULL)
@@ -396,8 +464,8 @@ ufo_backproject_task_setup (UfoTask *task,
     if (priv->interleave_float2 != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->interleave_float2), error);
 
-//    if (priv->interleave_half4 != NULL)
-//    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->interleave_half4), error);
+    if (priv->interleave_uint != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->interleave_uint), error);
 
     if (priv->uninterleave_float4 != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->uninterleave_float4), error);
@@ -405,8 +473,8 @@ ufo_backproject_task_setup (UfoTask *task,
     if (priv->uninterleave_float2 != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->uninterleave_float2), error);
 
-//    if (priv->uninterleave_half4 != NULL)
-//    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->uninterleave_half4), error);
+    if (priv->uninterleave_uint != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->uninterleave_uint), error);
 
     if (priv->texture_float4 != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_float4), error);
@@ -414,8 +482,14 @@ ufo_backproject_task_setup (UfoTask *task,
     if (priv->texture_float2 != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_float2), error);
 
-//    if (priv->texture_half4 != NULL)
-//    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_half4), error);
+    if (priv->texture_uint != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_uint), error);
+
+    if (priv->sort != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->sort), error);
+
+    if (priv->normalize != NULL)
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->normalize), error);
 }
 
 static cl_mem
@@ -585,10 +659,10 @@ ufo_backproject_task_finalize (GObject *object)
         priv->interleave_float2 = NULL;
     }
 
-//    if (priv->interleave_half4) {
-//        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->interleave_half4));
-//        priv->interleave_half4 = NULL;
-//    }
+    if (priv->interleave_uint) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->interleave_uint));
+        priv->interleave_uint = NULL;
+    }
 
     if (priv->uninterleave_float4) {
         UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->uninterleave_float4));
@@ -600,10 +674,10 @@ ufo_backproject_task_finalize (GObject *object)
         priv->uninterleave_float2 = NULL;
     }
 
-//    if (priv->uninterleave_half4) {
-//        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->uninterleave_half4));
-//        priv->uninterleave_half4 = NULL;
-//    }
+    if (priv->uninterleave_uint) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->uninterleave_uint));
+        priv->uninterleave_uint = NULL;
+    }
 
     if (priv->context) {
         UFO_RESOURCES_CHECK_CLERR (clReleaseContext (priv->context));
@@ -620,10 +694,20 @@ ufo_backproject_task_finalize (GObject *object)
         priv->texture_float2 = NULL;
     }
 
-//    if (priv->texture_half4) {
-//        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->texture_half4));
-//        priv->texture_half4 = NULL;
-//    }
+    if (priv->texture_uint) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->texture_uint));
+        priv->texture_uint = NULL;
+    }
+
+    if (priv->sort) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->sort));
+        priv->sort = NULL;
+    }
+
+    if (priv->normalize) {
+        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->normalize));
+        priv->normalize = NULL;
+    }
 
     G_OBJECT_CLASS (ufo_backproject_task_parent_class)->finalize (object);
 }
@@ -857,11 +941,16 @@ ufo_backproject_task_init (UfoBackprojectTask *self)
     priv->optimized_kernel_2d = NULL;
     priv->interleave_float4 = NULL;
     priv->interleave_float2 = NULL;
+    priv->interleave_uint = NULL;
     priv->uninterleave_float4 = NULL;
     priv->uninterleave_float2 = NULL;
+    priv->uninterleave_uint = NULL;
     priv->optimized_kernel_3d = NULL;
     priv->texture_float4 = NULL;
     priv->texture_float2 = NULL;
+    priv->texture_uint = NULL;
+    priv->sort = NULL;
+    priv->normalize = NULL;
     priv->n_projections = 0;
     priv->offset = 0;
     priv->axis_pos = -1.0;
