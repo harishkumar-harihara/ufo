@@ -20,7 +20,7 @@
 
 constant sampler_t volumeSampler = CLK_NORMALIZED_COORDS_FALSE |
                                    CLK_ADDRESS_CLAMP_TO_EDGE |
-                                   CLK_FILTER_LINEAR ;
+                                   CLK_FILTER_NEAREST ;
 
 
 kernel void
@@ -173,6 +173,8 @@ backproject_tex (read_only image2d_t sinogram,
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
+    // const float bx = idx - axis_pos + x_offset;
+    // const float by = idy - axis_pos + y_offset;
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     float sum = 0.0f;
@@ -199,6 +201,7 @@ backproject_tex (read_only image2d_t sinogram,
 #pragma unroll 4
 #endif
     for(int proj = 0; proj < n_projections; proj++) {
+        //float h = bx * cos_lut[angle_offset + proj] - by * sin_lut[angle_offset + proj] + axis_pos + 0.5f;
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
     }
@@ -300,7 +303,7 @@ texture_float4 (
         const unsigned int n_projections,
         const float axis_pos){
 
-      const int local_idx = get_local_id(0);
+        const int local_idx = get_local_id(0);
         const int local_idy = get_local_id(1);
 
         const int global_idx = get_global_id(0);
@@ -334,12 +337,10 @@ texture_float4 (
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
             float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos + 0.5f;
-            // float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + 0.5f;
             for(int q=0; q<4; q+=1){
-               sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
+                   sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
         }
-
 
         int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
 
@@ -364,6 +365,7 @@ texture_float4 (
 
         reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
+
 
 kernel void
 texture_float2 (
@@ -454,7 +456,7 @@ texture_uint (
         const unsigned int n_projections,
         const float axis_pos){
 
-      const int local_idx = get_local_id(0);
+        const int local_idx = get_local_id(0);
         const int local_idy = get_local_id(1);
 
         const int global_idx = get_global_id(0);

@@ -22,6 +22,8 @@
 #include <OpenCL/cl.h>
 #else
 #include <CL/cl.h>
+#include <stdio.h>
+
 #endif
 
 #include "ufo-forwardproject-task.h"
@@ -137,6 +139,11 @@ ufo_forwardproject_task_process (UfoTask *task,
     in_mem = ufo_buffer_get_device_image (inputs[0], cmd_queue);
     out_mem = ufo_buffer_get_device_array (output, cmd_queue);
     profiler = ufo_task_node_get_profiler (UFO_TASK_NODE (task));
+
+    fprintf(stdout, "N_Dimensions: %u \n",requisition->n_dims);
+    fprintf(stdout, "Dim-0: %lu \t Dim-1: %lu \n",requisition->dims[0],requisition->dims[1]);
+    fprintf(stdout, "Axis pos: %f \n",priv->axis_pos);
+    fprintf(stdout, "Angle step: %f \n",priv->angle_step);
 
     UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (priv->kernel, 0, sizeof (cl_mem), &in_mem));
     UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (priv->kernel, 1, sizeof (cl_mem), &out_mem));
