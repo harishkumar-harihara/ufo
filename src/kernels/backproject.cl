@@ -173,8 +173,6 @@ backproject_tex (read_only image2d_t sinogram,
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
-    // const float bx = idx - axis_pos + x_offset;
-    // const float by = idy - axis_pos + y_offset;
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     float sum = 0.0f;
@@ -201,7 +199,6 @@ backproject_tex (read_only image2d_t sinogram,
 #pragma unroll 4
 #endif
     for(int proj = 0; proj < n_projections; proj++) {
-        //float h = bx * cos_lut[angle_offset + proj] - by * sin_lut[angle_offset + proj] + axis_pos + 0.5f;
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
     }
@@ -327,7 +324,8 @@ texture_float4 (
         int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                         (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
-        float2 pixel_coord = {(remapped_index_global.x-axis_pos), (remapped_index_global.y-axis_pos)}; //bx and by
+
+        float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
 
         float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
         __local float4 shared_mem[64][4];
@@ -336,7 +334,7 @@ texture_float4 (
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
-            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos + 0.5f;
+            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
                    sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
@@ -403,8 +401,8 @@ texture_float2 (
     int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                     (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
-    float2 pixel_coord = {(remapped_index_global.x-axis_pos), (remapped_index_global.y-axis_pos)};
 
+    float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
     float2 sum[4] = {0.0f,0.0f};
     __local float2 shared_mem[64][4];
     __local float2 reconstructed_cache[16][16];
@@ -412,7 +410,7 @@ texture_float2 (
 
     for(int proj = projection_index; proj < n_projections; proj+=4) {
         float sine_value = sin_lut[angle_offset + proj];
-        float h = axis_pos + pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + 0.5f;
+        float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
         for(int q=0; q<4; q+=1){
            sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0)).xy;
         }
@@ -480,7 +478,7 @@ texture_uint (
         int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                         (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
-        float2 pixel_coord = {(remapped_index_global.x-axis_pos), (remapped_index_global.y-axis_pos)}; //bx and by
+        float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
 
         uint4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
         __local uint4 shared_mem[64][4];
@@ -490,7 +488,7 @@ texture_uint (
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
-            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos + 0.5f;
+            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
                sum[q] += read_imageui(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
@@ -522,7 +520,7 @@ texture_uint (
 }
 
 
-kernel void sort(global float *input){
+kernel void sort(global float *input, float min, float max){
     int local_idx = get_local_id(0);
     int local_idy = get_local_id(1);
 
@@ -547,9 +545,16 @@ kernel void sort(global float *input){
            localMax[local_idx + local_idy*group_sizex] = (localMax[local_idx + local_idy*group_sizex]<localMax[(local_idx + local_idy*group_sizex) + stride])?localMax[local_idx + local_idy*group_sizex]:localMax[local_idx + local_idy*group_sizex + stride];
     }
 
-    if((local_idx + local_idy*group_sizex)==0)
-        partialMin[get_group_id(0)] = localMin[0];
-        partialMax[get_group_id(0)] = localMax[0];
+    if((local_idx + local_idy*group_sizex)==0){
+        if(localMin[0] < min){
+            min = localMin[0];
+        }
+        if(localMax[0] > max){
+            max = localMax[0];
+        }
+    }
+        /*partialMin[get_group_id(0)] = localMin[0];
+        partialMax[get_group_id(0)] = localMax[0];*/
 }
 
 kernel void normalize_vec(global float *input_vec,

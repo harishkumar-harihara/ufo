@@ -300,10 +300,21 @@ ufo_backproject_task_process (UfoTask *task,
         gfloat max_element = FLT_MIN;
 
         if(quotient > 0) {
+            kernel = priv->sort;
+            clSetKernelArg(kernel, 0, sizeof(cl_mem), &device_array);
+            clSetKernelArg(kernel, 1, sizeof(gfloat), &min_element);
+            clSetKernelArg(kernel, 2, sizeof(gfloat), &max_element);
+
+            size_t globalWS[3] = {requisition->dims[0], requisition->dims[1], requisition->dims[2]};
+            size_t localWS[3] = {16,16,1};
+            ufo_profiler_call(profiler, cmd_queue, kernel, 3, globalWS, localWS);
+
             gfloat *host = ufo_buffer_get_host_array(inputs[0], cmd_queue);
             min_element = ufo_buffer_min(inputs[0], cmd_queue);
             max_element = ufo_buffer_max(inputs[0], cmd_queue);
 //            fprintf(stdout, "Min: %f \t Max: %f \n",min_element,max_element);
+
+
 
             // Normalize fp32 to uint
             if(priv->vector_len == UINT) {
