@@ -259,7 +259,7 @@ ufo_forwardproject_task_process (UfoTask *task,
 //        err = clEnqueueNDRangeKernel(cmd_queue,kernel_uninterleave,3,0,gWorkSize_3d,NULL,0,NULL,NULL);
 //        fprintf(stdout, "Error Uninterleave: %d \n",err);
 
-/*        gfloat *hostData;
+        gfloat *hostData;
         hostData = (gfloat*) malloc(sizeof(float)*requisition->dims[0]*requisition->dims[1]*requisition->dims[2]);
 
         clEnqueueReadBuffer(cmd_queue,out_mem,CL_TRUE,0,sizeof(float)*requisition->dims[0]*requisition->dims[1]*requisition->dims[2],
@@ -269,7 +269,7 @@ ufo_forwardproject_task_process (UfoTask *task,
         for(size_t i=0; i<requisition->dims[0]*requisition->dims[1]*requisition->dims[2]; i++){
             sum += hostData[i];
         }
-        fprintf(stdout, "Sum: %f \n",sum);*/
+        fprintf(stdout, "Sum: %f \n",sum);
 
         clReleaseMemObject(interleaved_img);
         clReleaseMemObject(reconstructed_buffer);

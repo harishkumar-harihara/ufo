@@ -207,7 +207,6 @@ ufo_backproject_task_process (UfoTask *task,
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 7, sizeof (guint),  &priv->burst_projections));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 8, sizeof (gfloat), &axis_pos));
 
-
         size_t localSize[2] = {16,16};
         ufo_profiler_call (profiler, cmd_queue, kernel, 2, requisition->dims, localSize);
     }
@@ -300,24 +299,12 @@ ufo_backproject_task_process (UfoTask *task,
         gfloat max_element = FLT_MIN;
 
         if(quotient > 0) {
-            kernel = priv->sort;
-            clSetKernelArg(kernel, 0, sizeof(cl_mem), &device_array);
-            clSetKernelArg(kernel, 1, sizeof(gfloat), &min_element);
-            clSetKernelArg(kernel, 2, sizeof(gfloat), &max_element);
-
-            size_t globalWS[3] = {requisition->dims[0], requisition->dims[1], requisition->dims[2]};
-            size_t localWS[3] = {16,16,1};
-            ufo_profiler_call(profiler, cmd_queue, kernel, 3, globalWS, localWS);
-
-            gfloat *host = ufo_buffer_get_host_array(inputs[0], cmd_queue);
-            min_element = ufo_buffer_min(inputs[0], cmd_queue);
-            max_element = ufo_buffer_max(inputs[0], cmd_queue);
-//            fprintf(stdout, "Min: %f \t Max: %f \n",min_element,max_element);
-
-
-
             // Normalize fp32 to uint
             if(priv->vector_len == UINT) {
+                gfloat *host = ufo_buffer_get_host_array(inputs[0], cmd_queue);
+                min_element = ufo_buffer_min(inputs[0], cmd_queue);
+                max_element = ufo_buffer_max(inputs[0], cmd_queue);
+
                 normalized_vec = clCreateBuffer(priv->context, CL_MEM_READ_WRITE,
                                                 sizeof(unsigned int) * requisition->dims[0] * requisition->dims[1] *
                                                 requisition->dims[2], NULL, 0);
@@ -362,19 +349,6 @@ ufo_backproject_task_process (UfoTask *task,
             size_t lSize[3] = {16, 16, 1};
             ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gSize, lSize);
 
-/*            if(priv->vector_len == UINT){
-                cl_uint4* hostData;
-                hostData = (cl_uint4*) malloc(buffer_size);
-                clEnqueueReadBuffer(cmd_queue,reconstructed_buffer,CL_TRUE,0,buffer_size,hostData,0,NULL,NULL);
-                fprintf(stdout,"Reconstructed buffer: %d \t %d \t %d \t %d \n",hostData[0].x,hostData[0].y,hostData[0].z,hostData[0].w);
-            }else{
-                cl_float4* hostData;
-                hostData = (cl_float4*) malloc(buffer_size);
-                clEnqueueReadBuffer(cmd_queue,reconstructed_buffer,CL_TRUE,0,buffer_size,hostData,0,NULL,NULL);
-                fprintf(stdout,"Reconstructed buffer: %f \t %f \t %f \t %f \n",hostData[0].x,hostData[0].y,hostData[0].z,hostData[0].w);
-            }*/
-
-
             /*UNINTERLEAVE*/
             clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);
             clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem);
@@ -384,8 +358,8 @@ ufo_backproject_task_process (UfoTask *task,
             }
 
             size_t gSize_uninterleave[3] = {requisition->dims[0], requisition->dims[1], quotient};
-
             ufo_profiler_call(profiler, cmd_queue, kernel_uninterleave, 3, gSize_uninterleave, NULL);
+
             clReleaseMemObject(interleaved_img);
             clReleaseMemObject(reconstructed_buffer);
         }

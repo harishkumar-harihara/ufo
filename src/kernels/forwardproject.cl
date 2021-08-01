@@ -79,7 +79,7 @@ interleave_float4 (global float *slice,
 }
 
 kernel void
-texture_float4 (
+forwardproject_tex3d (
         read_only image2d_array_t slice,
         global float4 *reconstructed_sinogram,
         float axis_pos,
@@ -105,11 +105,83 @@ texture_float4 (
     float4 sum = {0.0f,0.0f,0.0f,0.0f};
 
     for (int i = 0; i < l; i++) {
-        sum += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f));
-        sample += N;
+            sum += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f));
+            sample += N;
     }
 
     reconstructed_sinogram[idx + idy*sizex + idz*sizex*sizey] = sum;
+}
+
+kernel void
+texture_float4 (
+        read_only image2d_array_t slice,
+        global float4 *reconstructed_sinogram,
+        float axis_pos,
+        float angle_step) {
+
+    const int local_idx = get_local_id(0);
+    const int local_idy = get_local_id(1);
+
+    const int global_idx = get_global_id(0);
+    const int global_idy = get_global_id(1);
+    const int idz = get_global_id(2);
+
+    int local_sizex = get_local_size(0);
+    int local_sizey = get_local_size(1);
+
+    int global_sizex = get_global_size(0);
+    int global_sizey = get_global_size(1);
+
+    int square = local_idy%4;
+    int quadrant = local_idx/4;
+    int pixel = local_idx%4;
+
+    int projection_index = local_idy/4;
+    int2 remapped_index_local   = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
+    int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
+                                            (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
+
+    const float angle = remapped_index_global.y * angle_step;
+    const float r = fmin (axis_pos, global_sizex - axis_pos);
+    const float d = remapped_index_global.x - axis_pos + 0.5f;
+    const float l = sqrt(4.0f*r*r - 4.0f*d*d);
+
+    float2 D = (float2) (cos(angle), sin(angle));
+    D = normalize(D);
+    const float2 N = (float2) (D.y, -D.x);
+    float2 sample = d * D - l/2.0f * N + ((float2) (axis_pos, axis_pos));
+
+    float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
+    __local float4 shared_mem[64][4];
+    __local float4 reconstructed_cache[16][16];
+
+    for (int i = projection_index; i < l; i+=4) {
+        for(int q=0; q<4; q+=1){
+            sum[q] += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f));
+            sample += N;
+        }
+    }
+
+    int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
+
+    for(int q=0; q<4;q+=1){
+        shared_mem[(local_sizex*remapped_index_local.y + remapped_index_local.x)][projection_index] = sum[q];
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        for(int i=2; i>=1; i/=2){
+            if(remapped_index.x <i){
+                shared_mem[remapped_index.y][remapped_index.x] += shared_mem[remapped_index.y][remapped_index.x+i];
+            }
+            barrier(CLK_GLOBAL_MEM_FENCE); // syncthreads
+        }
+
+        if(remapped_index.x == 0){
+            reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = shared_mem[remapped_index.y][0];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
+    }
+
+    reconstructed_sinogram[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
 
 kernel void
