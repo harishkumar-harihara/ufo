@@ -19,9 +19,8 @@
 
 
 constant sampler_t volumeSampler = CLK_NORMALIZED_COORDS_FALSE |
-                                   CLK_ADDRESS_CLAMP_TO_EDGE |
+                                   CLK_ADDRESS_CLAMP |
                                    CLK_FILTER_NEAREST ;
-
 
 kernel void
 backproject_nearest (global float *sinogram,
@@ -50,8 +49,8 @@ backproject_nearest (global float *sinogram,
 }
 
 kernel void
-interleave_float4 (global float *sinogram,
-            write_only image2d_array_t interleaved_sinograms)
+interleave_float4 ( global float *sinogram,
+                    write_only image2d_array_t interleaved_sinograms)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
@@ -61,13 +60,15 @@ interleave_float4 (global float *sinogram,
 
     int sinogram_offset = idz*4;
 
-   write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),
-                 (float4)(sinogram[idx + idy * sizey + (sinogram_offset) * sizex * sizey],
-                          sinogram[idx + idy * sizey + (sinogram_offset + 1) * sizex * sizey],
-                          sinogram[idx + idy * sizey + (sinogram_offset + 2) * sizex * sizey],
-                          sinogram[idx + idy * sizey + (sinogram_offset + 3) * sizex * sizey]));
+    float x = sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey];
+    float y = sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey];
+    float z = sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey];
+    float w = sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey];
 
+    write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),(float4)(x,y,z,w));
 }
+
+
 
 kernel void
 interleave_float2 (global float *sinogram,
@@ -83,8 +84,8 @@ interleave_float2 (global float *sinogram,
 
     // At each pixel, pack 2 slices in Z-projection
     write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),
-                    (float4)(sinogram[idx + idy * sizey + (sinogram_offset) * sizex * sizey],
-                                      sinogram[idx + idy * sizey + (sinogram_offset + 1) * sizex * sizey],0.0,0.0));
+                    (float4)(sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
+                                      sinogram[idx + idy * sizex + (sinogram_offset + 1) * sizex * sizey],0.0,0.0));
 }
 
 kernel void
@@ -108,7 +109,7 @@ interleave_uint (global uint *sinogram,
 }
 
 kernel void
-uninterleave_float4 (  global float4 *reconstructed_buffer,
+uninterleave_float4 (global float4 *reconstructed_buffer,
                 global float *output)
 {
     const int idx = get_global_id(0);
@@ -118,10 +119,10 @@ uninterleave_float4 (  global float4 *reconstructed_buffer,
     const int sizey = get_global_size(1);
     int output_offset = idz*4;
 
-    output[idx + idy*sizey + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].x);
-    output[idx + idy*sizey + (output_offset+1)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].y);
-    output[idx + idy*sizey + (output_offset+2)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].z);
-    output[idx + idy*sizey + (output_offset+3)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].w);
+    output[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x);
+    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y);
+    output[idx + idy*sizex + (output_offset+2)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].z);
+    output[idx + idy*sizex + (output_offset+3)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].w);
 }
 
 kernel void
@@ -135,8 +136,8 @@ uninterleave_float2 (global float2 *reconstructed_buffer,
     const int sizey = get_global_size(1);
     int output_offset = idz*2;
 
-    output[idx + idy*sizey + (output_offset)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].x;
-    output[idx + idy*sizey + (output_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].y;
+    output[idx + idy*sizex + (output_offset)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x;
+    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y;
 }
 
 kernel void
@@ -177,33 +178,39 @@ backproject_tex (read_only image2d_t sinogram,
     const float by = idy - axis_pos + y_offset + 0.5f;
     float sum = 0.0f;
 
-#ifdef DEVICE_TESLA_K20XM
-#pragma unroll 4
-#endif
-#ifdef DEVICE_TESLA_P100_PCIE_16GB
-#pragma unroll 2
-#endif
-#ifdef DEVICE_GEFORCE_GTX_TITAN_BLACK
-#pragma unroll 8
-#endif
-#ifdef DEVICE_GEFORCE_GTX_TITAN
-#pragma unroll 14
-#endif
-#ifdef DEVICE_GEFORCE_GTX_1080_TI
-#pragma unroll 10
-#endif
-#ifdef DEVICE_QUADRO_M6000
-#pragma unroll 2
-#endif
-#ifdef DEVICE_GFX1010
-#pragma unroll 4
-#endif
+
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
     }
 
     slice[idy * get_global_size(0) + idx] = sum * M_PI_F / n_projections;
+}
+
+kernel void
+backproject_tex_stack (read_only image3d_t sinogram,
+                     global float *slice,
+                     constant float *sin_lut,
+                     constant float *cos_lut,
+                     const unsigned int x_offset,
+                     const unsigned int y_offset,
+                     const unsigned int angle_offset,
+                     const unsigned int n_projections,
+                     const float axis_pos)
+{
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+    const int idz = get_global_id(2);
+    const float bx = idx - axis_pos + x_offset + 0.5f;
+    const float by = idy - axis_pos + y_offset + 0.5f;
+    float sum = 0.0f;
+
+    for(int proj = 0; proj < n_projections; proj++) {
+        float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
+        sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f, idz,0.0)).x;
+    }
+
+    slice[idy * get_global_size(0) + idx + idz * get_global_size(0)* get_global_size(1)] = sum * M_PI_F / n_projections;
 }
 
 kernel void
@@ -230,32 +237,11 @@ backproject_tex2d (
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
-#ifdef DEVICE_TESLA_K20XM
-#pragma unroll 4
-#endif
-#ifdef DEVICE_TESLA_P100_PCIE_16GB
-#pragma unroll 2
-#endif
-#ifdef DEVICE_GEFORCE_GTX_TITAN_BLACK
-#pragma unroll 8
-#endif
-#ifdef DEVICE_GEFORCE_GTX_TITAN
-#pragma unroll 14
-#endif
-#ifdef DEVICE_GEFORCE_GTX_1080_TI
-#pragma unroll 10
-#endif
-#ifdef DEVICE_QUADRO_M6000
-#pragma unroll 2
-#endif
-#ifdef DEVICE_GFX1010
-#pragma unroll 4
-#endif
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f, idz, 0.0)).x;
     }
-    slice[idx + idy*sizey + output_offset*sizex*sizey] = sum * M_PI_F / n_projections;
+    slice[idy * get_global_size(0) + idx + output_offset*sizex*sizey] = sum * M_PI_F / n_projections;
 }
 
 kernel void
@@ -274,18 +260,17 @@ backproject_tex3d (
     const int idy = get_global_id(1);
     const int idz = get_global_id(2);
 
+    int sinogram_offset = idz*4;
+
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     float4 sum = {0.0f,0.0f,0.0f,0.0f};
-
-    const int sizex = get_global_size(0);
-    const int sizey = get_global_size(1);
 
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f,idz, 0.0));
     }
-    reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey] = sum * M_PI_F / n_projections;
+    reconstructed_buffer[idy * get_global_size(0) + idx + idz * get_global_size(0)* get_global_size(1)] = sum * M_PI_F / n_projections;
 }
 
 kernel void
@@ -324,8 +309,7 @@ texture_float4 (
         int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                         (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
-
-        float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
+        float2 pixel_coord = {(remapped_index_global.x - axis_pos + x_offset + 0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
 
         float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
         __local float4 shared_mem[64][4];
@@ -334,9 +318,9 @@ texture_float4 (
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
-            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
+            float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
-                   sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
+                   sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
         }
 
@@ -360,8 +344,7 @@ texture_float4 (
             }
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
         }
-
-        reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
+        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx] * M_PI_F / n_projections;
 }
 
 
@@ -410,9 +393,9 @@ texture_float2 (
 
     for(int proj = projection_index; proj < n_projections; proj+=4) {
         float sine_value = sin_lut[angle_offset + proj];
-        float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
+        float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
         for(int q=0; q<4; q+=1){
-           sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0)).xy;
+           sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0)).xy;
         }
     }
 
@@ -438,7 +421,7 @@ texture_float2 (
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
     }
 
-    reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
+    reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
 
 
@@ -488,9 +471,9 @@ texture_uint (
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
-            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
+            float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
-               sum[q] += read_imageui(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
+               sum[q] += read_imageui(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
         }
 
@@ -516,7 +499,7 @@ texture_uint (
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
         }
 
-        reconstructed_buffer[global_idx + global_idy*global_sizey + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
+        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
 
 
