@@ -244,25 +244,27 @@ ufo_backproject_task_process (UfoTask *task,
 
 
         // Region to copy
-        size_t region[3];
+/*        size_t region[3];
         region[0] = requisition->dims[0];
         region[1] = requisition->dims[1];
-        region[2] = 1;
+        region[2] = 1;*/
 
         //Source and Destination origins
-        size_t src_origin[3];
+/*        size_t src_origin[3];
         src_origin[0] =  0;
-        src_origin[1] =  0;
+        src_origin[1] =  0;*/
 
-        size_t dst_origin[] = { 0, 0, 0 };
+//        size_t dst_origin[] = { 0, 0, 0 };
 
         cl_mem device_array = ufo_buffer_get_device_array(inputs[0],cmd_queue);
 
         // Setting global work size
         gsize gWorkSize_3d[3];
-        gsize gWorkSize_2d[2];
-        gWorkSize_2d[0] = gWorkSize_3d[0] = requisition->dims[0];
-        gWorkSize_2d[1] = gWorkSize_3d[1] = requisition->dims[1];
+        gWorkSize_3d[0] = requisition->dims[0];
+        gWorkSize_3d[1] = requisition->dims[1];
+//        gsize gWorkSize_2d[2];
+//        gWorkSize_2d[0] = gWorkSize_3d[0] = requisition->dims[0];
+//        gWorkSize_2d[1] = gWorkSize_3d[1] = requisition->dims[1];
 
         unsigned long quotient;
         unsigned long remainder;
@@ -271,7 +273,6 @@ ufo_backproject_task_process (UfoTask *task,
         if(priv->vector_len == AUTO){
             if(priv->precision == INT8){
                 priv->vector_len = EIGHT;
-                priv->interpolation = NEAREST;
             }
             if(priv->precision == SINGLE){
                 priv->vector_len = TWO;
@@ -333,11 +334,11 @@ ufo_backproject_task_process (UfoTask *task,
         }
 
 
-        offset = requisition->dims[2] - remainder;
+//        offset = requisition->dims[2] - remainder;
 
-        size_t regionToCopy[3];
+/*        size_t regionToCopy[3];
         regionToCopy[0] = requisition->dims[0];
-        regionToCopy[1] = requisition->dims[1];
+        regionToCopy[1] = requisition->dims[1];*/
 
         cl_image_desc imageDesc;
         imageDesc.image_width = requisition->dims[0];
@@ -355,15 +356,17 @@ ufo_backproject_task_process (UfoTask *task,
         gfloat max_element = FLT_MIN;
 
         if(quotient > 0) {
+            gfloat *host = ufo_buffer_get_host_array(inputs[0], cmd_queue);
+            min_element = ufo_buffer_min(inputs[0], cmd_queue);
+            max_element = ufo_buffer_max(inputs[0], cmd_queue);
+
             // Normalize fp32 to uint
             if(priv->vector_len == EIGHT) {
-                gfloat *host = ufo_buffer_get_host_array(inputs[0], cmd_queue);
-                min_element = ufo_buffer_min(inputs[0], cmd_queue);
-                max_element = ufo_buffer_max(inputs[0], cmd_queue);
 
                 normalized_vec = clCreateBuffer(priv->context, CL_MEM_READ_WRITE,
                                                 sizeof(unsigned int) * requisition->dims[0] * requisition->dims[1] *
                                                 requisition->dims[2], NULL, 0);
+
 
                 kernel = priv->normalize;
                 clSetKernelArg(kernel, 0, sizeof(cl_mem), &device_array);
@@ -374,9 +377,6 @@ ufo_backproject_task_process (UfoTask *task,
                 size_t globalWS[3] = {requisition->dims[0], requisition->dims[1], requisition->dims[2]};
                 ufo_profiler_call(profiler, cmd_queue, kernel, 3, globalWS, NULL);
             }
-
-            fprintf(stdout, "Requisitions: %lu %lu %lu \n",requisition->dims[0],requisition->dims[1],requisition->dims[2]);
-
             /* PROCESS INTERLEAVE STAGE */
             interleaved_img = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
 
@@ -405,6 +405,7 @@ ufo_backproject_task_process (UfoTask *task,
 
             size_t lSize[3] = {16, 16, 1};
             ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gWorkSize_3d, lSize);
+
 
             /*UNINTERLEAVE*/
             clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);

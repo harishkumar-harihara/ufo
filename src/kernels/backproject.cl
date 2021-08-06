@@ -19,7 +19,7 @@
 
 
 constant sampler_t volumeSampler = CLK_NORMALIZED_COORDS_FALSE |
-                                   CLK_ADDRESS_CLAMP |
+                                   CLK_ADDRESS_CLAMP_TO_EDGE |
                                    CLK_FILTER_NEAREST ;
 
 kernel void
@@ -100,11 +100,11 @@ interleave_uint (global uint *sinogram,
 
     int sinogram_offset = idz*4;
 
-   write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),
-                 (uint4)(sinogram[idx + idy * sizey + (sinogram_offset) * sizex * sizey],
-                          sinogram[idx + idy * sizey + (sinogram_offset + 1) * sizex * sizey],
-                          sinogram[idx + idy * sizey + (sinogram_offset + 2) * sizex * sizey],
-                          sinogram[idx + idy * sizey + (sinogram_offset + 3) * sizex * sizey]));
+    write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),
+                 (uint4)(sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
+                         sinogram[idx + idy * sizex + (sinogram_offset + 1) * sizex * sizey],
+                         sinogram[idx + idy * sizex + (sinogram_offset + 2) * sizex * sizey],
+                         sinogram[idx + idy * sizex + (sinogram_offset + 3) * sizex * sizey]));
 
 }
 
@@ -142,17 +142,18 @@ uninterleave_float2 (global float2 *reconstructed_buffer,
 
 kernel void
 uninterleave_uint (global uint4 *reconstructed_buffer,
-                global float *output,
-                const float min,
-                const float max)
+                   global float *output,
+                   const float min,
+                   const float max)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
     const int idz = get_global_id(2);
+
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
-    int output_offset = idz*4;
 
+    int output_offset = idz*4;
     float scale = (max-min)/255.0f;
 
     output[idx + idy*sizey + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizey + idz*sizex*sizey].x)*scale+min;
@@ -439,7 +440,6 @@ texture_uint (
 
         const int local_idx = get_local_id(0);
         const int local_idy = get_local_id(1);
-
         const int global_idx = get_global_id(0);
         const int global_idy = get_global_id(1);
         const int idz = get_global_id(2);
@@ -461,38 +461,33 @@ texture_uint (
         int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                         (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
+        //float2 pixel_coord = {(remapped_index_global.x-axis_pos), (remapped_index_global.y-axis_pos)}; //bx and by
         float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
 
-        uint4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
+        uint4 sum[4] = {0,0,0,0};
         __local uint4 shared_mem[64][4];
         __local uint4 reconstructed_cache[16][16];
 
-        // uint4 read_imageui (	image2d_array_t  image,sampler_t  sampler,float4  coord )
-
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
-            float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
+            float h = pixel_coord.x * cos_lut[angle_offset + proj] + pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
                sum[q] += read_imageui(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
         }
-
 
         int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
 
         for(int q=0; q<4;q+=1){
             /* Moving partial sums to shared memory */
             shared_mem[(local_sizex*remapped_index_local.y + remapped_index_local.x)][projection_index] = sum[q];
-
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
-
             for(int i=2; i>=1; i/=2){
                 if(remapped_index.x <i){
                     shared_mem[remapped_index.y][remapped_index.x] += shared_mem[remapped_index.y][remapped_index.x+i];
                 }
                 barrier(CLK_GLOBAL_MEM_FENCE); // syncthreads
             }
-
             if(remapped_index.x == 0){
                 reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = shared_mem[remapped_index.y][0];
             }
@@ -501,7 +496,6 @@ texture_uint (
 
         reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
-
 
 kernel void sort(global float *input, float min, float max){
     int local_idx = get_local_id(0);
@@ -540,7 +534,8 @@ kernel void sort(global float *input, float min, float max){
         partialMax[get_group_id(0)] = localMax[0];*/
 }
 
-kernel void normalize_vec(global float *input_vec,
+kernel void
+normalize_vec(global float *input_vec,
                       global unsigned int *normalized_vec,
                       const float min,
                       const float max){
