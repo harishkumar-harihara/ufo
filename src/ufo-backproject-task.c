@@ -171,8 +171,10 @@ ufo_backproject_task_process (UfoTask *task,
     cl_command_queue cmd_queue;
     cl_mem in_mem;
     cl_mem interleaved_img;
+    cl_mem interleaved_img1; // to handle vector-len of EIGHT
     cl_mem out_mem;
     cl_mem reconstructed_buffer;
+    cl_mem padded_mem;
 
     cl_kernel kernel;
     cl_kernel kernel_interleave;
@@ -244,17 +246,17 @@ ufo_backproject_task_process (UfoTask *task,
 
 
         // Region to copy
-/*        size_t region[3];
-        region[0] = requisition->dims[0];
-        region[1] = requisition->dims[1];
-        region[2] = 1;*/
+        /*        size_t region[3];
+                region[0] = requisition->dims[0];
+                region[1] = requisition->dims[1];
+                region[2] = 1;*/
 
         //Source and Destination origins
-/*        size_t src_origin[3];
-        src_origin[0] =  0;
-        src_origin[1] =  0;*/
+        /*        size_t src_origin[3];
+                src_origin[0] =  0;
+                src_origin[1] =  0;*/
 
-//        size_t dst_origin[] = { 0, 0, 0 };
+        //        size_t dst_origin[] = { 0, 0, 0 };
 
         cl_mem device_array = ufo_buffer_get_device_array(inputs[0],cmd_queue);
 
@@ -262,9 +264,9 @@ ufo_backproject_task_process (UfoTask *task,
         gsize gWorkSize_3d[3];
         gWorkSize_3d[0] = requisition->dims[0];
         gWorkSize_3d[1] = requisition->dims[1];
-//        gsize gWorkSize_2d[2];
-//        gWorkSize_2d[0] = gWorkSize_3d[0] = requisition->dims[0];
-//        gWorkSize_2d[1] = gWorkSize_3d[1] = requisition->dims[1];
+        //        gsize gWorkSize_2d[2];
+        //        gWorkSize_2d[0] = gWorkSize_3d[0] = requisition->dims[0];
+        //        gWorkSize_2d[1] = gWorkSize_3d[1] = requisition->dims[1];
 
         unsigned long quotient;
         unsigned long remainder;
@@ -279,7 +281,6 @@ ufo_backproject_task_process (UfoTask *task,
             }
             if(priv->precision == HALF){
                 priv->vector_len = FOUR;
-                priv->interpolation = NEAREST;
             }
         }
 
@@ -320,13 +321,13 @@ ufo_backproject_task_process (UfoTask *task,
             buffer_size = sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient;
         }
         else if(priv->vector_len == EIGHT){
-            quotient = requisition->dims[2]/4;
-            remainder = requisition->dims[2]%4;
+            quotient = requisition->dims[2]/8;
+            remainder = requisition->dims[2]%8;
             kernel_interleave = priv->interleave_uint;
             kernel_texture = priv->texture_uint;
             kernel_uninterleave = priv->uninterleave_uint;
             format.image_channel_order = CL_RGBA;
-            buffer_size = sizeof(cl_uint4) * requisition->dims[0] * requisition->dims[1] * quotient;
+            buffer_size = sizeof(cl_uint8) * requisition->dims[0] * requisition->dims[1] * quotient;
         }
         else{
             g_warning ("Enter auto,1,2,4,8 for vector-len parameter");
@@ -334,11 +335,11 @@ ufo_backproject_task_process (UfoTask *task,
         }
 
 
-//        offset = requisition->dims[2] - remainder;
+        //        offset = requisition->dims[2] - remainder;
 
-/*        size_t regionToCopy[3];
-        regionToCopy[0] = requisition->dims[0];
-        regionToCopy[1] = requisition->dims[1];*/
+        /*        size_t regionToCopy[3];
+                regionToCopy[0] = requisition->dims[0];
+                regionToCopy[1] = requisition->dims[1];*/
 
         cl_image_desc imageDesc;
         imageDesc.image_width = requisition->dims[0];
@@ -369,56 +370,62 @@ ufo_backproject_task_process (UfoTask *task,
 
 
                 kernel = priv->normalize;
-                clSetKernelArg(kernel, 0, sizeof(cl_mem), &device_array);
-                clSetKernelArg(kernel, 1, sizeof(cl_mem), &normalized_vec);
-                clSetKernelArg(kernel, 2, sizeof(gfloat), &min_element);
-                clSetKernelArg(kernel, 3, sizeof(gfloat), &max_element);
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel, 0, sizeof(cl_mem), &device_array));
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel, 1, sizeof(cl_mem), &normalized_vec));
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel, 2, sizeof(gfloat), &min_element));
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel, 3, sizeof(gfloat), &max_element));
 
                 size_t globalWS[3] = {requisition->dims[0], requisition->dims[1], requisition->dims[2]};
                 ufo_profiler_call(profiler, cmd_queue, kernel, 3, globalWS, NULL);
             }
-            /* PROCESS INTERLEAVE STAGE */
+            // PROCESS INTERLEAVE STAGE
             interleaved_img = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
 
             if(priv->vector_len == EIGHT){
-                clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &normalized_vec);
+                interleaved_img1 = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &normalized_vec));
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 2, sizeof(cl_mem), &interleaved_img1));
             }else{
-                clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &device_array);
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &padded_mem));
             }
-            clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img);
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img));
 
             gWorkSize_3d[2] = quotient; // use 4 times less threads across z-dimension
+            fprintf(stdout, "dim-0: %lu \t dim-1: %lu \n",requisition->dims[0],requisition->dims[1]);
             ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gWorkSize_3d, NULL);
 
-            /* SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES */
+            // SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES
             reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE, buffer_size, NULL, 0);
 
-            clSetKernelArg(kernel_texture, 0, sizeof(cl_mem), &interleaved_img);
-            clSetKernelArg(kernel_texture, 1, sizeof(cl_mem), &reconstructed_buffer);
-            clSetKernelArg(kernel_texture, 2, sizeof(cl_mem), &priv->sin_lut);
-            clSetKernelArg(kernel_texture, 3, sizeof(cl_mem), &priv->cos_lut);
-            clSetKernelArg(kernel_texture, 4, sizeof(guint), &priv->roi_x);
-            clSetKernelArg(kernel_texture, 5, sizeof(guint), &priv->roi_y);
-            clSetKernelArg(kernel_texture, 6, sizeof(guint), &priv->offset);
-            clSetKernelArg(kernel_texture, 7, sizeof(guint), &priv->burst_projections);
-            clSetKernelArg(kernel_texture, 8, sizeof(gfloat), &axis_pos);
-
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 0, sizeof(cl_mem), &interleaved_img));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 1, sizeof(cl_mem), &reconstructed_buffer));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 2, sizeof(cl_mem), &priv->sin_lut));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 3, sizeof(cl_mem), &priv->cos_lut));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 4, sizeof(guint), &priv->roi_x));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 5, sizeof(guint), &priv->roi_y));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 6, sizeof(guint), &priv->offset));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 7, sizeof(guint), &priv->burst_projections));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 8, sizeof(gfloat), &axis_pos));
+            if(priv->vector_len == EIGHT){
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 9, sizeof(cl_mem), &interleaved_img1));
+            }
             size_t lSize[3] = {16, 16, 1};
+
             ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gWorkSize_3d, lSize);
 
 
-            /*UNINTERLEAVE*/
-            clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);
-            clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem);
+            //UNINTERLEAVE
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem));
             if(priv->vector_len == EIGHT){
-                clSetKernelArg(kernel_uninterleave, 2, sizeof(gfloat), &min_element);
-                clSetKernelArg(kernel_uninterleave, 3, sizeof(gfloat), &max_element);
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_uninterleave, 2, sizeof(gfloat), &min_element));
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_uninterleave, 3, sizeof(gfloat), &max_element));
             }
 
             ufo_profiler_call(profiler, cmd_queue, kernel_uninterleave, 3, gWorkSize_3d, NULL);
 
-            clReleaseMemObject(interleaved_img);
-            clReleaseMemObject(reconstructed_buffer);
+            UFO_RESOURCES_CHECK_CLERR(clReleaseMemObject(interleaved_img));
+            UFO_RESOURCES_CHECK_CLERR(clReleaseMemObject(reconstructed_buffer));
         }
     }
 
