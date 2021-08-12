@@ -49,29 +49,7 @@ backproject_nearest (global float *sinogram,
 }
 
 kernel void
-interleave_float4 ( global float *sinogram,
-                    write_only image2d_array_t interleaved_sinograms)
-{
-    const int idx = get_global_id(0);
-    const int idy = get_global_id(1);
-    const int idz = get_global_id(2);
-    const int sizex = get_global_size(0);
-    const int sizey = get_global_size(1);
-
-    int sinogram_offset = idz*4;
-
-    float x = sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey];
-    float y = sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey];
-    float z = sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey];
-    float w = sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey];
-
-    write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),(float4)(x,y,z,w));
-}
-
-
-
-kernel void
-interleave_float2 (global float *sinogram,
+interleave_single ( global float *sinogram,
                     write_only image2d_array_t interleaved_sinograms)
 {
     const int idx = get_global_id(0);
@@ -82,16 +60,38 @@ interleave_float2 (global float *sinogram,
 
     int sinogram_offset = idz*2;
 
+    float x = sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey];
+    float y = sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey];
+    /*float z = sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey];
+    float w = sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey];*/
+
+    write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),(float4)(x,y,0.0f,0.0f));
+}
+
+kernel void
+interleave_half (global float *sinogram,
+                 write_only image2d_array_t interleaved_sinograms)
+{
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+    const int idz = get_global_id(2);
+    const int sizex = get_global_size(0);
+    const int sizey = get_global_size(1);
+
+    int sinogram_offset = idz*4;
+
+    float4 b = {sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
+                sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey],
+                sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey],
+                sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey]};
+
     // At each pixel, pack 2 slices in Z-projection
-    write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),
-                    (float4)(sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
-                                      sinogram[idx + idy * sizex + (sinogram_offset + 1) * sizex * sizey],0.0,0.0));
+    write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),(float4)(b));
 }
 
 kernel void
 interleave_uint (global uint *sinogram,
-            write_only image2d_array_t interleaved_sinograms,
-            write_only image2d_array_t interleaved_sinograms1)
+            write_only image2d_array_t interleaved_sinograms)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
@@ -99,41 +99,18 @@ interleave_uint (global uint *sinogram,
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
-    int sinogram_offset = idz*8;
+    int sinogram_offset = idz*4;
 
-    write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),
+   write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),
                  (uint4)(sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
-                         sinogram[idx + idy * sizex + (sinogram_offset + 1) * sizex * sizey],
-                         sinogram[idx + idy * sizex + (sinogram_offset + 2) * sizex * sizey],
-                         sinogram[idx + idy * sizex + (sinogram_offset + 3) * sizex * sizey]));
-
-    write_imageui(interleaved_sinograms1, (int4)(idx, idy, idz, 0),
-                     (uint4)(sinogram[idx + idy * sizex + (sinogram_offset + 4) * sizex * sizey],
-                             sinogram[idx + idy * sizex + (sinogram_offset + 5) * sizex * sizey],
-                             sinogram[idx + idy * sizex + (sinogram_offset + 6) * sizex * sizey],
-                             sinogram[idx + idy * sizex + (sinogram_offset + 7) * sizex * sizey]));
+                          sinogram[idx + idy * sizex + (sinogram_offset + 1) * sizex * sizey],
+                          sinogram[idx + idy * sizex + (sinogram_offset + 2) * sizex * sizey],
+                          sinogram[idx + idy * sizex + (sinogram_offset + 3) * sizex * sizey]));
 }
 
 kernel void
-uninterleave_float4 (global float4 *reconstructed_buffer,
+uninterleave_single (global float2 *reconstructed_buffer,
                 global float *output)
-{
-    const int idx = get_global_id(0);
-    const int idy = get_global_id(1);
-    const int idz = get_global_id(2);
-    const int sizex = get_global_size(0);
-    const int sizey = get_global_size(1);
-    int output_offset = idz*4;
-
-    output[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x);
-    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y);
-    output[idx + idy*sizex + (output_offset+2)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].z);
-    output[idx + idy*sizex + (output_offset+3)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].w);
-}
-
-kernel void
-uninterleave_float2 (global float2 *reconstructed_buffer,
-                      global float *output)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
@@ -142,34 +119,51 @@ uninterleave_float2 (global float2 *reconstructed_buffer,
     const int sizey = get_global_size(1);
     int output_offset = idz*2;
 
-    output[idx + idy*sizex + (output_offset)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x;
-    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y;
+    output[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x);
+    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y);
+    /*output[idx + idy*sizex + (output_offset+2)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].z);
+    output[idx + idy*sizex + (output_offset+3)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].w);*/
 }
 
 kernel void
-uninterleave_uint (global uint8 *reconstructed_buffer,
-                   global float *output,
-                   const float min,
-                   const float max)
+uninterleave_half (global float4 *reconstructed_buffer,
+                   global float *output)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
     const int idz = get_global_id(2);
-
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
-    int output_offset = idz*8;
+    int output_offset = idz*4;
+
+    float4 b = reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey];
+
+    output[idx + idy*sizex + (output_offset)*sizex*sizey] = b.x;
+    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = b.y;
+    output[idx + idy*sizex + (output_offset+2)*sizex*sizey] = b.z;
+    output[idx + idy*sizex + (output_offset+3)*sizex*sizey] = b.w;
+}
+
+kernel void
+uninterleave_uint (global uint4 *reconstructed_buffer,
+                global float *output,
+                const float min,
+                const float max)
+{
+    const int idx = get_global_id(0);
+    const int idy = get_global_id(1);
+    const int idz = get_global_id(2);
+    const int sizex = get_global_size(0);
+    const int sizey = get_global_size(1);
+    int output_offset = idz*4;
+
     float scale = (max-min)/255.0f;
 
-    output[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s0)*scale+min;
-    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s1)*scale+min;
-    output[idx + idy*sizex + (output_offset+2)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s2)*scale+min;
-    output[idx + idy*sizex + (output_offset+3)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s3)*scale+min;
-    output[idx + idy*sizex + (output_offset+4)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s4)*scale+min;
-    output[idx + idy*sizex + (output_offset+5)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s5)*scale+min;
-    output[idx + idy*sizex + (output_offset+6)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s6)*scale+min;
-    output[idx + idy*sizex + (output_offset+7)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].s7)*scale+min;
+    output[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x)*scale+min;
+    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y)*scale+min;
+    output[idx + idy*sizex + (output_offset+2)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].z)*scale+min;
+    output[idx + idy*sizex + (output_offset+3)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].w)*scale+min;
 }
 
 kernel void
@@ -285,9 +279,9 @@ backproject_tex3d (
 }
 
 kernel void
-texture_float4 (
+texture_single (
         read_only image2d_array_t sinogram,
-        global float4 *reconstructed_buffer,
+        global float2 *reconstructed_buffer,
         constant float *sin_lut,
         constant float *cos_lut,
         const unsigned int x_offset,
@@ -322,16 +316,16 @@ texture_float4 (
 
         float2 pixel_coord = {(remapped_index_global.x - axis_pos + x_offset + 0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
 
-        float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
-        __local float4 shared_mem[64][4];
-        __local float4 reconstructed_cache[16][16];
+        float2 sum[4] = {0.0f,0.0f};
+        __local float2 shared_mem[64][4];
+        __local float2 reconstructed_cache[16][16];
 
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
             float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
-                   sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
+                   sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0)).xy;
             }
         }
 
@@ -355,14 +349,14 @@ texture_float4 (
             }
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
         }
-        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx] * M_PI_F / n_projections;
+        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
 
 
 kernel void
-texture_float2 (
+texture_half (
         read_only image2d_array_t sinogram,
-        global float2 *reconstructed_buffer,
+        global float4 *reconstructed_buffer,
         constant float *sin_lut,
         constant float *cos_lut,
         const unsigned int x_offset,
@@ -397,21 +391,20 @@ texture_float2 (
 
 
     float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
-    float2 sum[4] = {0.0f,0.0f};
-    __local float2 shared_mem[64][4];
-    __local float2 reconstructed_cache[16][16];
+    float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
+    __local float4 shared_mem[64][4];
+    __local float4 reconstructed_cache[16][16];
 
 
     for(int proj = projection_index; proj < n_projections; proj+=4) {
         float sine_value = sin_lut[angle_offset + proj];
         float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
         for(int q=0; q<4; q+=1){
-           sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0)).xy;
+           sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
         }
     }
 
-
-     int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
+    int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
 
     for(int q=0; q<4;q+=1){
         /* Moving partial sums to shared memory */
@@ -431,7 +424,6 @@ texture_float2 (
         }
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
     }
-
     reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
 
@@ -439,18 +431,18 @@ texture_float2 (
 kernel void
 texture_uint (
         read_only image2d_array_t sinogram,
-        global uint8 *reconstructed_buffer,
+        global uint4 *reconstructed_buffer,
         constant float *sin_lut,
         constant float *cos_lut,
         const unsigned int x_offset,
         const unsigned int y_offset,
         const unsigned int angle_offset,
         const unsigned int n_projections,
-        const float axis_pos,
-        read_only image2d_array_t sinogram1){
+        const float axis_pos){
 
         const int local_idx = get_local_id(0);
         const int local_idy = get_local_id(1);
+
         const int global_idx = get_global_id(0);
         const int global_idy = get_global_id(1);
         const int idz = get_global_id(2);
@@ -472,51 +464,45 @@ texture_uint (
         int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                         (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
-        //float2 pixel_coord = {(remapped_index_global.x-axis_pos), (remapped_index_global.y-axis_pos)}; //bx and by
         float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
 
-        uint4 sum[4] = {0,0,0,0};
-        uint4 sum1[4] = {0,0,0,0};
+        uint4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
         __local uint4 shared_mem[64][4];
-        __local uint4 shared_mem1[64][4];
         __local uint4 reconstructed_cache[16][16];
-        __local uint4 reconstructed_cache1[16][16];
+
+        // uint4 read_imageui (	image2d_array_t  image,sampler_t  sampler,float4  coord )
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
             float h = pixel_coord.x * cos_lut[angle_offset + proj] + pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
                sum[q] += read_imageui(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
-               sum1[q] += read_imageui(sinogram1, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
         }
+
 
         int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
 
         for(int q=0; q<4;q+=1){
             /* Moving partial sums to shared memory */
             shared_mem[(local_sizex*remapped_index_local.y + remapped_index_local.x)][projection_index] = sum[q];
-            shared_mem1[(local_sizex*remapped_index_local.y + remapped_index_local.x)][projection_index] = sum1[q];
+
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
+
             for(int i=2; i>=1; i/=2){
                 if(remapped_index.x <i){
                     shared_mem[remapped_index.y][remapped_index.x] += shared_mem[remapped_index.y][remapped_index.x+i];
-                    shared_mem1[remapped_index.y][remapped_index.x] += shared_mem1[remapped_index.y][remapped_index.x+i];
                 }
                 barrier(CLK_GLOBAL_MEM_FENCE); // syncthreads
             }
+
             if(remapped_index.x == 0){
                 reconstructed_cache[4*q+remapped_index.y/16][remapped_index.y%16] = shared_mem[remapped_index.y][0];
-                reconstructed_cache1[4*q+remapped_index.y/16][remapped_index.y%16] = shared_mem1[remapped_index.y][0];
             }
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
         }
 
-        uint8 result;
-        result.lo = reconstructed_cache[local_idy][local_idx];
-        result.hi = reconstructed_cache1[local_idy][local_idx];
-
-        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = result;
+        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
 }
 
 kernel void sort(global float *input, float min, float max){
