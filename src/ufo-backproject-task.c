@@ -305,9 +305,7 @@ ufo_backproject_task_process (UfoTask *task,
             UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img));
 
             size_t gsize_interleave[3] = {dim_x,dim_y,quotient};
-            //            ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gsize_interleave, NULL);
-            cl_int err = clEnqueueNDRangeKernel(cmd_queue,kernel_interleave,3,0,gsize_interleave,NULL,0,NULL,NULL);
-            fprintf(stdout, "Error Interleave: %d \n",err);
+            ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gsize_interleave, NULL);
 
             // SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES
             reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE, buffer_size, NULL, 0);
@@ -324,9 +322,7 @@ ufo_backproject_task_process (UfoTask *task,
 
             size_t gsize_texture[3] = {requisition->dims[0],requisition->dims[1],quotient};
             size_t lSize[3] = {16,16,1};
-            //            ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gsize_texture, lSize);
-            err = clEnqueueNDRangeKernel(cmd_queue,kernel_texture,3,0,gsize_texture,lSize,0,NULL,NULL);
-            fprintf(stdout, "Error Texture: %d \n",err);
+            ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gsize_texture, lSize);
 
             //UNINTERLEAVE
             UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer));
@@ -504,13 +500,9 @@ ufo_backproject_task_get_requisition (UfoTask *task,
     /* TODO: we should check here, that we might access data outside the
      * projections */
 
-    fprintf(stdout, "In_Req: %lu %lu \n",in_req.dims[0],in_req.dims[1]);
-
     requisition->dims[0] = priv->roi_width == 0 ? in_req.dims[0] : (gsize) priv->roi_width;
     requisition->dims[1] = priv->roi_height == 0 ? in_req.dims[0] : (gsize) priv->roi_height;
     requisition->dims[2] = in_req.n_dims == 3 ? in_req.dims[2]:1;
-
-    fprintf(stdout, "Requisition: %lu %lu \n",requisition->dims[0],requisition->dims[1]);
 
     if (priv->real_angle_step < 0.0) {
         if (priv->angle_step <= 0.0)
