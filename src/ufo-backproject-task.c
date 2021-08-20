@@ -228,8 +228,6 @@ ufo_backproject_task_process (UfoTask *task,
         UfoRequisition req;
         ufo_buffer_get_requisition(inputs[0],&req);
 
-        unsigned long dim_x= req.dims[0];
-        unsigned long dim_y= req.dims[1]; //(requisition->dims[1]%256==0) ? requisition->dims[1] : (((requisition->dims[1]/256)+1)*256);
         unsigned long quotient;
 
         if(priv->precision == SINGLE){
@@ -259,8 +257,8 @@ ufo_backproject_task_process (UfoTask *task,
         }
 
         cl_image_desc imageDesc;
-        imageDesc.image_width = dim_x; //requisition->dims[0];
-        imageDesc.image_height = dim_y;
+        imageDesc.image_width = req.dims[0];
+        imageDesc.image_height = req.dims[1];
         imageDesc.image_depth = 0;
         imageDesc.image_array_size = quotient;
         imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D_ARRAY;
@@ -304,7 +302,7 @@ ufo_backproject_task_process (UfoTask *task,
             }
             UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img));
 
-            size_t gsize_interleave[3] = {dim_x,dim_y,quotient};
+            size_t gsize_interleave[3] = {req.dims[0],req.dims[1],quotient};
             ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gsize_interleave, NULL);
 
             // SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES
