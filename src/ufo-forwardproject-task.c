@@ -77,9 +77,9 @@ ufo_forwardproject_task_setup (UfoTask *task,
     priv->context = ufo_resources_get_context(resources);
     priv->kernel = ufo_resources_get_kernel (resources, "forwardproject.cl", "forwardproject", NULL, error);
 
-    priv->interleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "interleave_float4", NULL, error);
-    priv->texture_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "texture_float4", NULL, error);
-    priv->uninterleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "uninterleave_float4", NULL, error);
+    priv->interleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "interleave_single", NULL, error);
+    priv->texture_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "forwardproject_tex3d", NULL, error);
+    priv->uninterleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "uninterleave_single", NULL, error);
 
     if (priv->kernel != NULL)
         UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->kernel), error);
@@ -171,11 +171,6 @@ ufo_forwardproject_task_process (UfoTask *task,
 
     ufo_profiler_enable_tracing(profiler,TRUE);
 
-/*    fprintf(stdout, "N_Dimensions: %u \n",requisition->n_dims);
-    fprintf(stdout, "Dim-0: %lu \t Dim-1: %lu \t Dim-2: %lu \n",requisition->dims[0],requisition->dims[1],requisition->dims[2]);
-    fprintf(stdout, "Axis pos: %f \n",priv->axis_pos);
-    fprintf(stdout, "Angle step: %f \n",priv->angle_step);*/
-
     if(requisition->n_dims == 2) {
         in_mem = ufo_buffer_get_device_image (inputs[0], cmd_queue);
 
@@ -186,23 +181,11 @@ ufo_forwardproject_task_process (UfoTask *task,
 
         ufo_profiler_call(profiler, cmd_queue, priv->kernel, 2, requisition->dims, NULL);
 
-        gfloat *hostData;
-        hostData = (gfloat*) malloc(sizeof(float)*requisition->dims[0]*requisition->dims[1]);
-
-        clEnqueueReadBuffer(cmd_queue,out_mem,CL_TRUE,0,sizeof(float)*requisition->dims[0]*requisition->dims[1],
-                             hostData,0,NULL,NULL);
-
-        float sum = 0.0f;
-        for(size_t i=0; i<requisition->dims[0]*requisition->dims[1]; i++){
-            sum += hostData[i];
-        }
-        fprintf(stdout, "Sum: %f \n",sum);
-
     } else{
 
         // Quotient
         unsigned long quotient;
-        quotient = requisition->dims[2]/4;
+        quotient = requisition->dims[2]/2;
 
         // Image format
         cl_image_format format;
@@ -232,8 +215,6 @@ ufo_forwardproject_task_process (UfoTask *task,
 
         size_t gWorkSize_3d[3] = {requisition->dims[0],requisition->dims[1],quotient};
         ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gWorkSize_3d, NULL);
-//        cl_int err = clEnqueueNDRangeKernel(cmd_queue,kernel_interleave,3,0,gWorkSize_3d,NULL,0,NULL,NULL);
-//        fprintf(stdout, "Error Interleave: %d \n",err);
 
         // Forward projection
         size_t buffer_size = sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient;
@@ -248,28 +229,12 @@ ufo_forwardproject_task_process (UfoTask *task,
         size_t gSize[3] = {requisition->dims[0], requisition->dims[1], quotient};
         size_t lSize[3] = {16, 16, 1};
         ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gSize, lSize);
-//        err = clEnqueueNDRangeKernel(cmd_queue,kernel_texture,3,0,gSize,lSize,0,NULL,NULL);
-//        fprintf(stdout, "Error Texture: %d \n",err);
 
         // Uninterleave
         kernel_uninterleave = priv->uninterleave_float4;
         clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);
         clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem);
         ufo_profiler_call(profiler, cmd_queue, kernel_uninterleave, 3, gWorkSize_3d, NULL);
-//        err = clEnqueueNDRangeKernel(cmd_queue,kernel_uninterleave,3,0,gWorkSize_3d,NULL,0,NULL,NULL);
-//        fprintf(stdout, "Error Uninterleave: %d \n",err);
-
-        gfloat *hostData;
-        hostData = (gfloat*) malloc(sizeof(float)*requisition->dims[0]*requisition->dims[1]*requisition->dims[2]);
-
-        clEnqueueReadBuffer(cmd_queue,out_mem,CL_TRUE,0,sizeof(float)*requisition->dims[0]*requisition->dims[1]*requisition->dims[2],
-                             hostData,0,NULL,NULL);
-
-        float sum = 0.0f;
-        for(size_t i=0; i<requisition->dims[0]*requisition->dims[1]*requisition->dims[2]; i++){
-            sum += hostData[i];
-        }
-        fprintf(stdout, "Sum: %f \n",sum);
 
         clReleaseMemObject(interleaved_img);
         clReleaseMemObject(reconstructed_buffer);

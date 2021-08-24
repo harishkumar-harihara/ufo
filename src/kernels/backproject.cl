@@ -20,7 +20,7 @@
 
 constant sampler_t volumeSampler = CLK_NORMALIZED_COORDS_FALSE |
                                    CLK_ADDRESS_CLAMP_TO_EDGE |
-                                   CLK_FILTER_NEAREST ;
+                                   CLK_FILTER_LINEAR;
 
 kernel void
 backproject_nearest (global float *sinogram,
@@ -62,8 +62,6 @@ interleave_single ( global float *sinogram,
 
     float x = sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey];
     float y = sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey];
-    /*float z = sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey];
-    float w = sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey];*/
 
     write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),(float4)(x,y,0.0f,0.0f));
 }
@@ -101,11 +99,12 @@ interleave_uint (global uint *sinogram,
 
     int sinogram_offset = idz*4;
 
-   write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),
-                 (uint4)(sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
-                          sinogram[idx + idy * sizex + (sinogram_offset + 1) * sizex * sizey],
-                          sinogram[idx + idy * sizex + (sinogram_offset + 2) * sizex * sizey],
-                          sinogram[idx + idy * sizex + (sinogram_offset + 3) * sizex * sizey]));
+    uint4 b = {sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
+               sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey],
+               sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey],
+               sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey]};
+
+   write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),(uint4)(b));
 }
 
 kernel void
@@ -119,10 +118,9 @@ uninterleave_single (global float2 *reconstructed_buffer,
     const int sizey = get_global_size(1);
     int output_offset = idz*2;
 
-    output[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x);
-    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y);
-    /*output[idx + idy*sizex + (output_offset+2)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].z);
-    output[idx + idy*sizex + (output_offset+3)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].w);*/
+    output[idx + idy*sizex + (output_offset)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x;
+    output[idx + idy*sizex + (output_offset+1)*sizex*sizey] = reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].y;
+
 }
 
 kernel void
@@ -156,8 +154,8 @@ uninterleave_uint (global uint4 *reconstructed_buffer,
     const int idz = get_global_id(2);
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
-    int output_offset = idz*4;
 
+    int output_offset = idz*4;
     float scale = (max-min)/255.0f;
 
     output[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_buffer[idx + idy*sizex + idz*sizex*sizey].x)*scale+min;
@@ -179,10 +177,10 @@ backproject_tex (read_only image2d_t sinogram,
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
+
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     float sum = 0.0f;
-
 
     for(int proj = 0; proj < n_projections; proj++) {
         float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
@@ -288,7 +286,8 @@ texture_single (
         const unsigned int y_offset,
         const unsigned int angle_offset,
         const unsigned int n_projections,
-        const float axis_pos){
+        const float axis_pos,
+        unsigned long size){
 
         const int local_idx = get_local_id(0);
         const int local_idy = get_local_id(1);
@@ -310,6 +309,7 @@ texture_single (
 
         /* Computing projection and pixel offsets */
         int projection_index = local_idy/4;
+
         int2 remapped_index_local   = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
         int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                         (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
@@ -349,7 +349,8 @@ texture_single (
             }
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
         }
-        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
+
+        reconstructed_buffer[global_idx + global_idy*size + idz*size*size] = reconstructed_cache[local_idy][local_idx];
 }
 
 
@@ -363,7 +364,8 @@ texture_half (
         const unsigned int y_offset,
         const unsigned int angle_offset,
         const unsigned int n_projections,
-        const float axis_pos){
+        const float axis_pos,
+        unsigned long size){
 
     const int local_idx = get_local_id(0);
     const int local_idy = get_local_id(1);
@@ -424,7 +426,7 @@ texture_half (
         }
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
     }
-    reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
+    reconstructed_buffer[global_idx + global_idy*size + idz*size*size] = reconstructed_cache[local_idy][local_idx];
 }
 
 
@@ -438,7 +440,8 @@ texture_uint (
         const unsigned int y_offset,
         const unsigned int angle_offset,
         const unsigned int n_projections,
-        const float axis_pos){
+        const float axis_pos,
+        unsigned long size){
 
         const int local_idx = get_local_id(0);
         const int local_idy = get_local_id(1);
@@ -470,8 +473,6 @@ texture_uint (
         __local uint4 shared_mem[64][4];
         __local uint4 reconstructed_cache[16][16];
 
-        // uint4 read_imageui (	image2d_array_t  image,sampler_t  sampler,float4  coord )
-
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
             float h = pixel_coord.x * cos_lut[angle_offset + proj] + pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
@@ -502,7 +503,7 @@ texture_uint (
             barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
         }
 
-        reconstructed_buffer[global_idx + global_idy*global_sizex + idz*global_sizex*global_sizey] = reconstructed_cache[local_idy][local_idx];
+        reconstructed_buffer[global_idx + global_idy*size + idz*size*size] = reconstructed_cache[local_idy][local_idx];
 }
 
 kernel void sort(global float *input, float min, float max){
@@ -544,9 +545,9 @@ kernel void sort(global float *input, float min, float max){
 
 kernel void
 normalize_vec(global float *input_vec,
-                      global unsigned int *normalized_vec,
-                      const float min,
-                      const float max){
+              global unsigned int *normalized_vec,
+              const float min,
+              const float max){
 
     const float scale = 255.0f / (max - min);
     int index = get_global_id(0) + get_global_id(1) * get_global_size(1) + get_global_id(2) * get_global_size(0) * get_global_size(1);
