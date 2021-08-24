@@ -205,7 +205,6 @@ ufo_backproject_task_process (UfoTask *task,
             kernel = priv->nearest_kernel;
         }
 
-
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 0, sizeof (cl_mem), &in_mem));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 1, sizeof (cl_mem), &out_mem));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 2, sizeof (cl_mem), &priv->sin_lut));
@@ -216,8 +215,7 @@ ufo_backproject_task_process (UfoTask *task,
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 7, sizeof (guint),  &priv->burst_projections));
         UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (kernel, 8, sizeof (gfloat), &axis_pos));
 
-        size_t localSize[2] = {16,16};
-        ufo_profiler_call (profiler, cmd_queue, kernel, 2, requisition->dims, localSize);
+        ufo_profiler_call (profiler, cmd_queue, kernel, 2, requisition->dims , NULL);
     }
     else{
 
@@ -228,6 +226,9 @@ ufo_backproject_task_process (UfoTask *task,
         UfoRequisition req;
         ufo_buffer_get_requisition(inputs[0],&req);
 
+        unsigned long dim_x = (requisition->dims[0]%16 == 0) ? requisition->dims[0] : (((requisition->dims[0]/16)+1)*16);
+        unsigned long dim_y = (requisition->dims[1]%16 == 0) ? requisition->dims[1] : (((requisition->dims[1]/16)+1)*16);
+
         unsigned long quotient;
 
         if(priv->precision == SINGLE){
@@ -236,7 +237,7 @@ ufo_backproject_task_process (UfoTask *task,
             kernel_texture = priv->texture_single;
             kernel_uninterleave = priv->uninterleave_single;
             format.image_channel_order = CL_RG;
-            buffer_size = sizeof(cl_float2) * requisition->dims[0] * requisition->dims[1] * quotient;
+            buffer_size = sizeof(cl_float2) * dim_x * dim_y * quotient;
             format.image_channel_data_type = CL_FLOAT;
         }else if(priv->precision == HALF){
             quotient = requisition->dims[2]/4;
@@ -244,7 +245,7 @@ ufo_backproject_task_process (UfoTask *task,
             kernel_texture = priv->texture_half;
             kernel_uninterleave = priv->uninterleave_half;
             format.image_channel_order = CL_RGBA;
-            buffer_size = sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient;
+            buffer_size = sizeof(cl_float4) * dim_x * dim_y * quotient;
             format.image_channel_data_type = CL_HALF_FLOAT;
         }else if(priv->precision == INT8){
             quotient = requisition->dims[2]/4;
@@ -252,7 +253,7 @@ ufo_backproject_task_process (UfoTask *task,
             kernel_texture = priv->texture_uint;
             kernel_uninterleave = priv->uninterleave_uint;
             format.image_channel_order = CL_RGBA;
-            buffer_size = sizeof(cl_uint4) * requisition->dims[0] * requisition->dims[1] * quotient;
+            buffer_size = sizeof(cl_uint4) * dim_x * dim_y * quotient;
             format.image_channel_data_type = CL_UNSIGNED_INT8;
         }
 
@@ -279,8 +280,7 @@ ufo_backproject_task_process (UfoTask *task,
                 max_element = ufo_buffer_max(inputs[0], cmd_queue);
 
                 normalized_vec = clCreateBuffer(priv->context, CL_MEM_READ_WRITE,
-                                                sizeof(unsigned int) * requisition->dims[0] * requisition->dims[1] *
-                                                requisition->dims[2], NULL, 0);
+                                sizeof(unsigned int) * req.dims[0] * req.dims[1] * req.dims[2], NULL, 0);
 
                 kernel_normalize = priv->normalize;
                 UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_normalize, 0, sizeof(cl_mem), &device_array));
@@ -288,7 +288,7 @@ ufo_backproject_task_process (UfoTask *task,
                 UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_normalize, 2, sizeof(gfloat), &min_element));
                 UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_normalize, 3, sizeof(gfloat), &max_element));
 
-                size_t globalWS[3] = {requisition->dims[0], requisition->dims[1], requisition->dims[2]};
+                size_t globalWS[3] = {req.dims[0], req.dims[1], req.dims[2]};
                 ufo_profiler_call(profiler, cmd_queue, kernel_normalize, 3, globalWS, NULL);
             }
 
@@ -305,6 +305,7 @@ ufo_backproject_task_process (UfoTask *task,
             size_t gsize_interleave[3] = {req.dims[0],req.dims[1],quotient};
             ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gsize_interleave, NULL);
 
+
             // SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES
             reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE, buffer_size, NULL, 0);
 
@@ -317,8 +318,9 @@ ufo_backproject_task_process (UfoTask *task,
             UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 6, sizeof(guint), &priv->offset));
             UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 7, sizeof(guint), &priv->burst_projections));
             UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 8, sizeof(gfloat), &axis_pos));
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_texture, 9, sizeof(unsigned long), &requisition->dims[0]));
 
-            size_t gsize_texture[3] = {requisition->dims[0],requisition->dims[1],quotient};
+            size_t gsize_texture[3] = {dim_x,dim_y,quotient};
             size_t lSize[3] = {16,16,1};
             ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gsize_texture, lSize);
 
@@ -339,8 +341,7 @@ ufo_backproject_task_process (UfoTask *task,
     }
 
     size_t temp_size;
-    clGetMemObjectInfo(out_mem, CL_MEM_SIZE,
-                       sizeof(temp_size), &temp_size, NULL);
+    clGetMemObjectInfo(out_mem, CL_MEM_SIZE, sizeof(temp_size), &temp_size, NULL);
     priv->out_mem_size += temp_size;
     fprintf(stdout, "Time taken GPU: %f Size: %zu \n", ufo_profiler_elapsed(profiler,UFO_PROFILER_TIMER_GPU),priv->out_mem_size);
     return TRUE;

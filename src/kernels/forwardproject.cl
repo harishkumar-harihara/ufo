@@ -59,8 +59,8 @@ forwardproject(read_only image2d_t slice,
 }
 
 kernel void
-interleave_float4 (global float *slice,
-            write_only image2d_array_t interleaved_slice)
+interleave_single (global float *slice,
+                   write_only image2d_array_t interleaved_slice)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
@@ -68,20 +68,18 @@ interleave_float4 (global float *slice,
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
 
-    int slice_offset = idz*4;
+    int slice_offset = idz*2;
 
-   write_imagef(interleaved_slice, (int4)(idx, idy, idz, 0),
-                 (float4)(slice[idx + idy * sizex + (slice_offset) * sizex * sizey],
-                          slice[idx + idy * sizex + (slice_offset + 1) * sizex * sizey],
-                          slice[idx + idy * sizex + (slice_offset + 2) * sizex * sizey],
-                          slice[idx + idy * sizex + (slice_offset + 3) * sizex * sizey]));
+    float x = slice[idx + idy * sizex + (slice_offset) * sizex * sizey];
+    float y = slice[idx + idy * sizex + (slice_offset+1) * sizex * sizey];
 
+    write_imagef(interleaved_slice, (int4)(idx, idy, idz, 0),(float4)(x,y,0.0f,0.0f));
 }
 
 kernel void
 forwardproject_tex3d (
         read_only image2d_array_t slice,
-        global float4 *reconstructed_sinogram,
+        global float2 *reconstructed_sinogram,
         float axis_pos,
         float angle_step) {
 
@@ -102,10 +100,10 @@ forwardproject_tex3d (
     const float2 N = (float2) (D.y, -D.x);
 
     float2 sample = d * D - l/2.0f * N + ((float2) (axis_pos, axis_pos));
-    float4 sum = {0.0f,0.0f,0.0f,0.0f};
+    float2 sum = {0.0f,0.0f};
 
     for (int i = 0; i < l; i++) {
-            sum += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f));
+            sum += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f)).xy;
             sample += N;
     }
 
@@ -113,9 +111,9 @@ forwardproject_tex3d (
 }
 
 kernel void
-texture_float4 (
+texture_single (
         read_only image2d_array_t slice,
-        global float4 *reconstructed_sinogram,
+        global float2 *reconstructed_sinogram,
         float axis_pos,
         float angle_step) {
 
@@ -139,7 +137,7 @@ texture_float4 (
     int projection_index = local_idy/4;
     int2 remapped_index_local   = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
     int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
-                                            (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
+                                   (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
     const float angle = remapped_index_global.y * angle_step;
     const float r = fmin (axis_pos, global_sizex - axis_pos);
@@ -148,16 +146,17 @@ texture_float4 (
 
     float2 D = (float2) (cos(angle), sin(angle));
     D = normalize(D);
+
     const float2 N = (float2) (D.y, -D.x);
     float2 sample = d * D - l/2.0f * N + ((float2) (axis_pos, axis_pos));
 
-    float4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
-    __local float4 shared_mem[64][4];
-    __local float4 reconstructed_cache[16][16];
+    float2 sum[4] = {0.0f,0.0f,0.0f,0.0f};
+    __local float2 shared_mem[64][4];
+    __local float2 reconstructed_cache[16][16];
 
     for (int i = projection_index; i < l; i+=4) {
         for(int q=0; q<4; q+=1){
-            sum[q] += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f));
+            sum[q] += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f)).xy;
             sample += N;
         }
     }
@@ -165,8 +164,10 @@ texture_float4 (
     int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
 
     for(int q=0; q<4;q+=1){
+        /* Moving partial sums to shared memory */
         shared_mem[(local_sizex*remapped_index_local.y + remapped_index_local.x)][projection_index] = sum[q];
-        barrier(CLK_LOCAL_MEM_FENCE);
+
+        barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
 
         for(int i=2; i>=1; i/=2){
             if(remapped_index.x <i){
@@ -185,7 +186,7 @@ texture_float4 (
 }
 
 kernel void
-uninterleave_float4 (global float4 *reconstructed_sinogram,
+uninterleave_single (global float2 *reconstructed_sinogram,
                      global float *sinogram)
 {
     const int idx = get_global_id(0);
@@ -193,10 +194,10 @@ uninterleave_float4 (global float4 *reconstructed_sinogram,
     const int idz = get_global_id(2);
     const int sizex = get_global_size(0);
     const int sizey = get_global_size(1);
-    int output_offset = idz*4;
+    int output_offset = idz*2;
 
-    sinogram[idx + idy*sizex + (output_offset)*sizex*sizey] = (reconstructed_sinogram[idx + idy*sizex + idz*sizex*sizey].x);
-    sinogram[idx + idy*sizex + (output_offset+1)*sizex*sizey] = (reconstructed_sinogram[idx + idy*sizex + idz*sizex*sizey].y);
-    sinogram[idx + idy*sizex + (output_offset+2)*sizex*sizey] = (reconstructed_sinogram[idx + idy*sizex + idz*sizex*sizey].z);
-    sinogram[idx + idy*sizex + (output_offset+3)*sizex*sizey] = (reconstructed_sinogram[idx + idy*sizex + idz*sizex*sizey].w);
+    sinogram[idx + idy*sizex + (output_offset)*sizex*sizey] = reconstructed_sinogram[idx + idy*sizex + idz*sizex*sizey].x;
+    sinogram[idx + idy*sizex + (output_offset+1)*sizex*sizey] = reconstructed_sinogram[idx + idy*sizex + idz*sizex*sizey].y;
 }
+
+
