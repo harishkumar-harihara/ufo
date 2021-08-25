@@ -273,38 +273,23 @@ ufo_backproject_task_process (UfoTask *task,
         float min_element;
 
         if(quotient > 0) {
-            if(priv->precision == INT8){
-                // Normalization
-                gfloat* host = ufo_buffer_get_host_array(inputs[0],cmd_queue);
-                min_element = ufo_buffer_min(inputs[0], cmd_queue);
-                max_element = ufo_buffer_max(inputs[0], cmd_queue);
-
-                normalized_vec = clCreateBuffer(priv->context, CL_MEM_READ_WRITE,
-                                sizeof(unsigned int) * req.dims[0] * req.dims[1] * req.dims[2], NULL, 0);
-
-                kernel_normalize = priv->normalize;
-                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_normalize, 0, sizeof(cl_mem), &device_array));
-                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_normalize, 1, sizeof(cl_mem), &normalized_vec));
-                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_normalize, 2, sizeof(gfloat), &min_element));
-                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_normalize, 3, sizeof(gfloat), &max_element));
-
-                size_t globalWS[3] = {req.dims[0], req.dims[1], req.dims[2]};
-                ufo_profiler_call(profiler, cmd_queue, kernel_normalize, 3, globalWS, NULL);
-            }
-
-            // PROCESS INTERLEAVE STAGE
+            // Interleave
             interleaved_img = clCreateImage(priv->context, CL_MEM_READ_WRITE, &format, &imageDesc, NULL, 0);
 
-            if(priv->precision == INT8){
-                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &normalized_vec));
-            }else{
-                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &device_array));
-            }
+            UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &device_array));
             UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img));
+            if(priv->precision == INT8){
+                //Normalize
+                float *host = ufo_buffer_get_host_array(inputs[0],cmd_queue);
+                min_element = ufo_buffer_min(inputs[0],cmd_queue);
+                max_element = ufo_buffer_max(inputs[0],cmd_queue);
+
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 2, sizeof(float), &min_element));
+                UFO_RESOURCES_CHECK_CLERR(clSetKernelArg(kernel_interleave, 3, sizeof(float), &max_element));
+            }
 
             size_t gsize_interleave[3] = {req.dims[0],req.dims[1],quotient};
             ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gsize_interleave, NULL);
-
 
             // SINOGRAM RECONSTRUCTION FOR MULTIPLE SLICES
             reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE, buffer_size, NULL, 0);

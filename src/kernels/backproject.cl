@@ -88,8 +88,10 @@ interleave_half (global float *sinogram,
 }
 
 kernel void
-interleave_uint (global uint *sinogram,
-            write_only image2d_array_t interleaved_sinograms)
+interleave_uint (global float *sinogram,
+            write_only image2d_array_t interleaved_sinograms,
+            const float min,
+            const float max)
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
@@ -99,10 +101,12 @@ interleave_uint (global uint *sinogram,
 
     int sinogram_offset = idz*4;
 
-    uint4 b = {sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey],
-               sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey],
-               sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey],
-               sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey]};
+    const float scale = 255.0f / (max - min);
+
+    uint4 b = {(sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey] - min)*scale,
+               (sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey] - min)*scale,
+               (sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey] - min)*scale,
+               (sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey] - min)*scale};
 
    write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),(uint4)(b));
 }
@@ -553,3 +557,4 @@ normalize_vec(global float *input_vec,
     int index = get_global_id(0) + get_global_id(1) * get_global_size(1) + get_global_id(2) * get_global_size(0) * get_global_size(1);
     normalized_vec[index] = (unsigned int)((input_vec[index]-min)*scale);
 }
+
