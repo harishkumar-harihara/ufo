@@ -19,8 +19,12 @@
 
 
 constant sampler_t volumeSampler = CLK_NORMALIZED_COORDS_FALSE |
-                                   CLK_ADDRESS_CLAMP_TO_EDGE |
+                                   CLK_ADDRESS_CLAMP |
                                    CLK_FILTER_LINEAR;
+
+constant sampler_t volumeSampler_int8 = CLK_NORMALIZED_COORDS_FALSE |
+                                        CLK_ADDRESS_CLAMP_TO_EDGE |
+                                        CLK_FILTER_LINEAR;
 
 kernel void
 backproject_nearest (global float *sinogram,
@@ -181,104 +185,39 @@ backproject_tex (read_only image2d_t sinogram,
 {
     const int idx = get_global_id(0);
     const int idy = get_global_id(1);
-
     const float bx = idx - axis_pos + x_offset + 0.5f;
     const float by = idy - axis_pos + y_offset + 0.5f;
     float sum = 0.0f;
 
+#ifdef DEVICE_TESLA_K20XM
+#pragma unroll 4
+#endif
+#ifdef DEVICE_TESLA_P100_PCIE_16GB
+#pragma unroll 2
+#endif
+#ifdef DEVICE_GEFORCE_GTX_TITAN_BLACK
+#pragma unroll 8
+#endif
+#ifdef DEVICE_GEFORCE_GTX_TITAN
+#pragma unroll 14
+#endif
+#ifdef DEVICE_GEFORCE_GTX_1080_TI
+#pragma unroll 10
+#endif
+#ifdef DEVICE_QUADRO_M6000
+#pragma unroll 2
+#endif
+#ifdef DEVICE_GFX1010
+#pragma unroll 4
+#endif
     for(int proj = 0; proj < n_projections; proj++) {
-        float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
+        float h = bx * cos_lut[angle_offset + proj] - by * sin_lut[angle_offset + proj] + axis_pos;
         sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).x;
     }
 
     slice[idy * get_global_size(0) + idx] = sum * M_PI_F / n_projections;
 }
 
-kernel void
-backproject_tex_stack (read_only image3d_t sinogram,
-                     global float *slice,
-                     constant float *sin_lut,
-                     constant float *cos_lut,
-                     const unsigned int x_offset,
-                     const unsigned int y_offset,
-                     const unsigned int angle_offset,
-                     const unsigned int n_projections,
-                     const float axis_pos)
-{
-    const int idx = get_global_id(0);
-    const int idy = get_global_id(1);
-    const int idz = get_global_id(2);
-    const float bx = idx - axis_pos + x_offset + 0.5f;
-    const float by = idy - axis_pos + y_offset + 0.5f;
-    float sum = 0.0f;
-
-    for(int proj = 0; proj < n_projections; proj++) {
-        float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-        sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f, idz,0.0)).x;
-    }
-
-    slice[idy * get_global_size(0) + idx + idz * get_global_size(0)* get_global_size(1)] = sum * M_PI_F / n_projections;
-}
-
-kernel void
-backproject_tex2d (
-        read_only image2d_array_t sinogram,
-        global float *slice,
-        constant float *sin_lut,
-        constant float *cos_lut,
-        const unsigned int x_offset,
-        const unsigned int y_offset,
-        const unsigned int angle_offset,
-        const unsigned int n_projections,
-        const float axis_pos,
-        unsigned long offset)
-{
-    const int idx = get_global_id(0);
-    const int idy = get_global_id(1);
-    const int idz = get_global_id(2);
-
-    const float bx = idx - axis_pos + x_offset + 0.5f;
-    const float by = idy - axis_pos + y_offset + 0.5f;
-    int output_offset = idz + (int)offset;
-    float sum = 0.0f;
-    const int sizex = get_global_size(0);
-    const int sizey = get_global_size(1);
-
-    for(int proj = 0; proj < n_projections; proj++) {
-        float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-        sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f, idz, 0.0)).x;
-    }
-    slice[idy * get_global_size(0) + idx + output_offset*sizex*sizey] = sum * M_PI_F / n_projections;
-}
-
-kernel void
-backproject_tex3d (
-        read_only image2d_array_t sinogram,
-        global float4 *reconstructed_buffer,
-        constant float *sin_lut,
-        constant float *cos_lut,
-        const unsigned int x_offset,
-        const unsigned int y_offset,
-        const unsigned int angle_offset,
-        const unsigned int n_projections,
-        const float axis_pos){
-
-    const int idx = get_global_id(0);
-    const int idy = get_global_id(1);
-    const int idz = get_global_id(2);
-
-    int sinogram_offset = idz*4;
-
-    const float bx = idx - axis_pos + x_offset + 0.5f;
-    const float by = idy - axis_pos + y_offset + 0.5f;
-    float4 sum = {0.0f,0.0f,0.0f,0.0f};
-
-    for(int proj = 0; proj < n_projections; proj++) {
-        float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
-        sum += read_imagef (sinogram, volumeSampler, (float4)(h, proj + 0.5f,idz, 0.0));
-    }
-    reconstructed_buffer[idy * get_global_size(0) + idx + idz * get_global_size(0)* get_global_size(1)] = sum * M_PI_F / n_projections;
-}
 
 kernel void
 texture_single (
@@ -314,11 +253,14 @@ texture_single (
         /* Computing projection and pixel offsets */
         int projection_index = local_idy/4;
 
-        int2 remapped_index_local   = {(4*square + 2*(quadrant%2) + (pixel%2)),(2* (quadrant/2) + (pixel/2))};
+        int2 remapped_index_local   = {(4*square + 2*(quadrant%2) + (pixel%2)),
+                                       (2* (quadrant/2) + (pixel/2))};
+
         int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                         (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
-        float2 pixel_coord = {(remapped_index_global.x - axis_pos + x_offset + 0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
+        float2 pixel_coord = {(remapped_index_global.x - axis_pos + x_offset + 0.5f),
+                              (remapped_index_global.y - axis_pos + y_offset+0.5f)}; //bx and by
 
         float2 sum[4] = {0.0f,0.0f};
         __local float2 shared_mem[64][4];
@@ -327,9 +269,9 @@ texture_single (
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
-            float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
+            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
-                   sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0)).xy;
+                   sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0)).xy;
             }
         }
 
@@ -404,9 +346,9 @@ texture_half (
 
     for(int proj = projection_index; proj < n_projections; proj+=4) {
         float sine_value = sin_lut[angle_offset + proj];
-        float h = pixel_coord.y * sin_lut[angle_offset + proj] + pixel_coord.x * cos_lut[angle_offset + proj] + axis_pos;
+        float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
         for(int q=0; q<4; q+=1){
-           sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
+           sum[q] += read_imagef(sinogram, volumeSampler, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
         }
     }
 
@@ -473,15 +415,15 @@ texture_uint (
 
         float2 pixel_coord = {(remapped_index_global.x-axis_pos+x_offset+0.5f), (remapped_index_global.y-axis_pos+y_offset+0.5f)}; //bx and by
 
-        uint4 sum[4] = {0.0f,0.0f,0.0f,0.0f};
+        uint4 sum[4] = {0,0,0,0};
         __local uint4 shared_mem[64][4];
         __local uint4 reconstructed_cache[16][16];
 
         for(int proj = projection_index; proj < n_projections; proj+=4) {
             float sine_value = sin_lut[angle_offset + proj];
-            float h = pixel_coord.x * cos_lut[angle_offset + proj] + pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
+            float h = pixel_coord.x * cos_lut[angle_offset + proj] - pixel_coord.y * sin_lut[angle_offset + proj] + axis_pos;
             for(int q=0; q<4; q+=1){
-               sum[q] += read_imageui(sinogram, volumeSampler, (float4)(h+4*q*sine_value, proj + 0.5f,idz, 0.0));
+               sum[q] += read_imageui(sinogram, volumeSampler_int8, (float4)(h-4*q*sine_value, proj + 0.5f,idz, 0.0));
             }
         }
 
@@ -510,42 +452,6 @@ texture_uint (
         reconstructed_buffer[global_idx + global_idy*size + idz*size*size] = reconstructed_cache[local_idy][local_idx];
 }
 
-kernel void sort(global float *input, float min, float max){
-    int local_idx = get_local_id(0);
-    int local_idy = get_local_id(1);
-
-    uint group_sizex = get_local_size(0);
-    uint group_sizey = get_local_size(1);
-
-    int global_idx = get_global_id(0);
-    int global_idy = get_global_id(1);
-
-    __local float localMin[256];
-    __local float localMax[256];
-    __local float partialMin[4096];
-    __local float partialMax[4096];
-
-    localMax[local_idx + local_idy*group_sizex] = localMin[local_idx + local_idy*group_sizex] = input[global_idy * get_global_size(0) + global_idx];
-
-    for(uint stride = (group_sizex*group_sizey)/2; stride > 0; stride /=2)
-    {
-        barrier(CLK_LOCAL_MEM_FENCE);
-        if((local_idx + local_idy*group_sizex) < stride)
-           localMin[local_idx + local_idy*group_sizex] = (localMin[local_idx + local_idy*group_sizex]<localMin[(local_idx + local_idy*group_sizex) + stride])?localMin[local_idx + local_idy*group_sizex]:localMin[local_idx + local_idy*group_sizex + stride];
-           localMax[local_idx + local_idy*group_sizex] = (localMax[local_idx + local_idy*group_sizex]<localMax[(local_idx + local_idy*group_sizex) + stride])?localMax[local_idx + local_idy*group_sizex]:localMax[local_idx + local_idy*group_sizex + stride];
-    }
-
-    if((local_idx + local_idy*group_sizex)==0){
-        if(localMin[0] < min){
-            min = localMin[0];
-        }
-        if(localMax[0] > max){
-            max = localMax[0];
-        }
-    }
-        /*partialMin[get_group_id(0)] = localMin[0];
-        partialMax[get_group_id(0)] = localMax[0];*/
-}
 
 kernel void
 normalize_vec(global float *input_vec,

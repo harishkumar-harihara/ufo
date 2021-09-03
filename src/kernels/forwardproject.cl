@@ -18,8 +18,8 @@
  */
 
 constant sampler_t sampler = CLK_NORMALIZED_COORDS_FALSE |
-                             CLK_ADDRESS_CLAMP |
-                             CLK_FILTER_LINEAR;
+                             CLK_ADDRESS_CLAMP_TO_EDGE |
+                             CLK_FILTER_NEAREST             ;
 
 kernel void
 forwardproject(read_only image2d_t slice,
@@ -139,6 +139,7 @@ texture_single (
     int2 remapped_index_global  = {(get_group_id(0)*get_local_size(0)+remapped_index_local.x),
                                    (get_group_id(1)*get_local_size(1)+remapped_index_local.y)};
 
+
     const float angle = remapped_index_global.y * angle_step;
     const float r = fmin (axis_pos, global_sizex - axis_pos);
     const float d = remapped_index_global.x - axis_pos + 0.5f;
@@ -150,27 +151,27 @@ texture_single (
     const float2 N = (float2) (D.y, -D.x);
     float2 sample = d * D - l/2.0f * N + ((float2) (axis_pos, axis_pos));
 
-    float2 sum[4] = {0.0f,0.0f,0.0f,0.0f};
+    float2 sum[4] = {0.0f,0.0f};
     __local float2 shared_mem[64][4];
     __local float2 reconstructed_cache[16][16];
 
     for (int i = projection_index; i < l; i+=4) {
         for(int q=0; q<4; q+=1){
             sum[q] += read_imagef(slice, sampler, (float4)((float2)sample,idz,0.0f)).xy;
-            sample += N;
+            sample += N; // must be in this loop, else only one half of sinogram is constructed
         }
     }
 
     int2 remapped_index = {(local_idx%4), (4*local_idy + (local_idx/4))};
 
     for(int q=0; q<4;q+=1){
-        /* Moving partial sums to shared memory */
+        // Moving partial sums to shared memory
         shared_mem[(local_sizex*remapped_index_local.y + remapped_index_local.x)][projection_index] = sum[q];
 
         barrier(CLK_LOCAL_MEM_FENCE); // syncthreads
 
         for(int i=2; i>=1; i/=2){
-            if(remapped_index.x <i){
+            if(remapped_index.x < i){
                 shared_mem[remapped_index.y][remapped_index.x] += shared_mem[remapped_index.y][remapped_index.x+i];
             }
             barrier(CLK_GLOBAL_MEM_FENCE); // syncthreads

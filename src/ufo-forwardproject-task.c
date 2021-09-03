@@ -78,7 +78,8 @@ ufo_forwardproject_task_setup (UfoTask *task,
     priv->kernel = ufo_resources_get_kernel (resources, "forwardproject.cl", "forwardproject", NULL, error);
 
     priv->interleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "interleave_single", NULL, error);
-    priv->texture_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "forwardproject_tex3d", NULL, error);
+    priv->texture_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "texture_single", NULL, error);
+//    priv->texture_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "forwardproject_tex3d", NULL, error);
     priv->uninterleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "uninterleave_single", NULL, error);
 
     if (priv->kernel != NULL)
@@ -115,9 +116,6 @@ ufo_forwardproject_task_get_requisition (UfoTask *task,
     requisition->dims[1] = priv->num_projections;
     requisition->dims[2] = in_req.dims[2];
 
-/*    requisition->n_dims = 2;
-    requisition->dims[0] = in_req.dims[0];
-    requisition->dims[1] = priv->num_projections;*/
     if (priv->axis_pos == -G_MAXFLOAT) {
         priv->axis_pos = in_req.dims[0] / 2.0f;
     }
@@ -183,6 +181,9 @@ ufo_forwardproject_task_process (UfoTask *task,
 
     } else{
 
+        fprintf(stdout, "angle_step: %f \n",priv->angle_step);
+        fprintf(stdout, "axis_pos: %f \n",priv->axis_pos);
+
         // Quotient
         unsigned long quotient;
         quotient = requisition->dims[2]/2;
@@ -217,7 +218,7 @@ ufo_forwardproject_task_process (UfoTask *task,
         ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gWorkSize_3d, NULL);
 
         // Forward projection
-        size_t buffer_size = sizeof(cl_float4) * requisition->dims[0] * requisition->dims[1] * quotient;
+        size_t buffer_size = sizeof(cl_float2) * requisition->dims[0] * requisition->dims[1] * quotient;
         reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE, buffer_size, NULL, 0);
 
         kernel_texture = priv->texture_float4;
@@ -227,8 +228,16 @@ ufo_forwardproject_task_process (UfoTask *task,
         clSetKernelArg(kernel_texture, 3, sizeof(gfloat), &priv->angle_step);
 
         size_t gSize[3] = {requisition->dims[0], requisition->dims[1], quotient};
-        size_t lSize[3] = {16, 16, 1};
+        size_t lSize[3] = {16,16,1};
         ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gSize, lSize);
+
+        cl_float2* host = (cl_float2*) malloc(buffer_size);
+        clEnqueueReadBuffer(cmd_queue,reconstructed_buffer,CL_TRUE,0,buffer_size,host,0,NULL,NULL);
+        float sum = 0.0f;
+        for(size_t i=0; i<requisition->dims[0] * requisition->dims[1] * quotient; i++){
+            sum += (host[i].x + host[i].y);
+        }
+        fprintf(stdout, "Sum: %f \n",sum);
 
         // Uninterleave
         kernel_uninterleave = priv->uninterleave_float4;
@@ -244,7 +253,6 @@ ufo_forwardproject_task_process (UfoTask *task,
                        sizeof(temp_size), &temp_size, NULL);
     priv->out_mem_size += temp_size;
     fprintf(stdout, "Time taken GPU: %f Size: %zu \n", ufo_profiler_elapsed(profiler,UFO_PROFILER_TIMER_GPU),priv->out_mem_size);
-
 
     return TRUE;
 }
