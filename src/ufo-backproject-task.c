@@ -62,25 +62,10 @@ static GEnumValue interpolation_values[] = {
         {LINEAR, "linear", "linear"}
 };
 
-typedef enum {
-    AUTO,ONE,TWO,FOUR,EIGHT
-} VectorLen;
-
-static GEnumValue vector_lengths[] = {
-        {AUTO, "AUTO", "auto"},
-        {ONE, "1", "1"},
-        {TWO, "2", "2"},
-        {FOUR, "4", "4"},
-        {EIGHT, "8", "8"}
-};
-
 struct _UfoBackprojectTaskPrivate {
     cl_context context;
     cl_kernel nearest_kernel;
     cl_kernel texture_kernel;
-    cl_kernel texture_stack;
-    cl_kernel optimized_kernel_2d;
-    cl_kernel optimized_kernel_3d;
     cl_kernel interleave_single;
     cl_kernel interleave_half;
     cl_kernel interleave_uint;
@@ -90,7 +75,6 @@ struct _UfoBackprojectTaskPrivate {
     cl_kernel texture_single;
     cl_kernel texture_half;
     cl_kernel texture_uint;
-    cl_kernel sort;
     cl_kernel normalize;
     cl_mem sin_lut;
     cl_mem cos_lut;
@@ -111,7 +95,6 @@ struct _UfoBackprojectTaskPrivate {
     Mode mode;
     Precision precision;
     Interpolation interpolation;
-    VectorLen vector_len;
     size_t out_mem_size;
 };
 
@@ -136,7 +119,6 @@ enum {
     PROP_ROI_HEIGHT,
     PROP_MODE,
     PROP_PRECISION,
-    PROP_VECTOR_LEN,
     PROP_INTERPOLATION,
     N_PROPERTIES
 };
@@ -237,8 +219,8 @@ ufo_backproject_task_process (UfoTask *task,
             kernel_texture = priv->texture_single;
             kernel_uninterleave = priv->uninterleave_single;
             format.image_channel_order = CL_RG;
-            buffer_size = sizeof(cl_float2) * dim_x * dim_y * quotient;
             format.image_channel_data_type = CL_FLOAT;
+            buffer_size = sizeof(cl_float2) * dim_x * dim_y * quotient;
         }else if(priv->precision == HALF){
             quotient = requisition->dims[2]/4;
             kernel_interleave = priv->interleave_half;
@@ -253,8 +235,8 @@ ufo_backproject_task_process (UfoTask *task,
             kernel_texture = priv->texture_uint;
             kernel_uninterleave = priv->uninterleave_uint;
             format.image_channel_order = CL_RGBA;
-            buffer_size = sizeof(cl_uint4) * dim_x * dim_y * quotient;
             format.image_channel_data_type = CL_UNSIGNED_INT8;
+            buffer_size = sizeof(cl_uint4) * dim_x * dim_y * quotient;
         }
 
         cl_image_desc imageDesc;
@@ -344,10 +326,6 @@ ufo_backproject_task_setup (UfoTask *task,
     priv->context = ufo_resources_get_context (resources);
     priv->nearest_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_nearest", NULL, error);
     priv->texture_kernel = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex", NULL, error);
-    priv->texture_stack = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex_stack", NULL, error);
-
-    priv->optimized_kernel_3d = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex3d", NULL, error);
-    priv->optimized_kernel_2d = ufo_resources_get_kernel (resources, "backproject.cl", "backproject_tex2d", NULL, error);
 
     priv->interleave_single = ufo_resources_get_kernel (resources, "backproject.cl", "interleave_single", NULL, error);
     priv->texture_single = ufo_resources_get_kernel (resources, "backproject.cl", "texture_single", NULL, error);
@@ -357,7 +335,6 @@ ufo_backproject_task_setup (UfoTask *task,
     priv->texture_half = ufo_resources_get_kernel (resources, "backproject.cl", "texture_half", NULL, error);
     priv->uninterleave_half = ufo_resources_get_kernel (resources, "backproject.cl", "uninterleave_half", NULL, error);
 
-    priv->sort = ufo_resources_get_kernel (resources, "backproject.cl", "sort", NULL, error);
     priv->normalize = ufo_resources_get_kernel (resources, "backproject.cl", "normalize_vec", NULL, error);
     priv->interleave_uint = ufo_resources_get_kernel (resources, "backproject.cl", "interleave_uint", NULL, error);
     priv->texture_uint = ufo_resources_get_kernel (resources, "backproject.cl", "texture_uint", NULL, error);
@@ -370,15 +347,6 @@ ufo_backproject_task_setup (UfoTask *task,
 
     if (priv->texture_kernel != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_kernel), error);
-
-    if (priv->texture_stack != NULL)
-    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_stack), error);
-
-    if (priv->optimized_kernel_3d != NULL)
-    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->optimized_kernel_3d), error);
-
-    if (priv->optimized_kernel_2d != NULL)
-    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->optimized_kernel_2d), error);
 
     if (priv->interleave_single != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->interleave_single), error);
@@ -406,9 +374,6 @@ ufo_backproject_task_setup (UfoTask *task,
 
     if (priv->texture_uint != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_uint), error);
-
-    if (priv->sort != NULL)
-    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->sort), error);
 
     if (priv->normalize != NULL)
     UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->normalize), error);
@@ -562,21 +527,6 @@ ufo_backproject_task_finalize (GObject *object)
         priv->texture_kernel = NULL;
     }
 
-    if (priv->texture_stack) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->texture_stack));
-        priv->texture_stack = NULL;
-    }
-
-    if (priv->optimized_kernel_2d) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->optimized_kernel_2d));
-        priv->optimized_kernel_2d = NULL;
-    }
-
-    if (priv->optimized_kernel_3d) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->optimized_kernel_3d));
-        priv->optimized_kernel_3d = NULL;
-    }
-
     if (priv->interleave_single) {
         UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->interleave_single));
         priv->interleave_single = NULL;
@@ -625,11 +575,6 @@ ufo_backproject_task_finalize (GObject *object)
     if (priv->texture_uint) {
         UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->texture_uint));
         priv->texture_uint = NULL;
-    }
-
-    if (priv->sort) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->sort));
-        priv->sort = NULL;
     }
 
     if (priv->normalize) {
@@ -694,9 +639,6 @@ ufo_backproject_task_set_property (GObject *object,
         case PROP_PRECISION:
             priv->precision = g_value_get_enum(value);
             break;
-        case PROP_VECTOR_LEN:
-            priv->vector_len = g_value_get_enum(value);
-            break;
         case PROP_INTERPOLATION:
             priv->interpolation = g_value_get_enum(value);
             break;
@@ -747,9 +689,6 @@ ufo_backproject_task_get_property (GObject *object,
             break;
         case PROP_PRECISION:
             g_value_set_enum(value,priv->precision);
-            break;
-        case PROP_VECTOR_LEN:
-            g_value_set_enum(value,priv->vector_len);
             break;
         case PROP_INTERPOLATION:
             g_value_set_enum(value,priv->interpolation);
@@ -829,13 +768,6 @@ ufo_backproject_task_class_init (UfoBackprojectTaskClass *klass)
                               g_enum_register_static("ufo_backproject_interpolation", interpolation_values),
                               LINEAR, G_PARAM_READWRITE);
 
-    properties[PROP_VECTOR_LEN] =
-            g_param_spec_enum("vector-len",
-                              "Vector length (\"auto\",\"1\",\"2\", \"4\",\"8\")",
-                              "Vector length (\"auto\",\"1\",\"2\", \"4\",\"8\")",
-                              g_enum_register_static("ufo_backproject_vectorlen", vector_lengths),
-                              AUTO, G_PARAM_READWRITE);
-
     properties[PROP_ROI_X] =
             g_param_spec_uint ("roi-x",
                                "X coordinate of region of interest",
@@ -879,19 +811,15 @@ ufo_backproject_task_init (UfoBackprojectTask *self)
     self->priv = priv = UFO_BACKPROJECT_TASK_GET_PRIVATE (self);
     priv->nearest_kernel = NULL;
     priv->texture_kernel = NULL;
-    priv->texture_stack = NULL;
-    priv->optimized_kernel_2d = NULL;
     priv->interleave_single = NULL;
     priv->interleave_half = NULL;
     priv->interleave_uint = NULL;
     priv->uninterleave_single = NULL;
     priv->uninterleave_half = NULL;
     priv->uninterleave_uint = NULL;
-    priv->optimized_kernel_3d = NULL;
     priv->texture_single = NULL;
     priv->texture_half = NULL;
     priv->texture_uint = NULL;
-    priv->sort = NULL;
     priv->normalize = NULL;
     priv->n_projections = 0;
     priv->offset = 0;
@@ -909,5 +837,4 @@ ufo_backproject_task_init (UfoBackprojectTask *self)
     priv->roi_width = priv->roi_height = 0;
     priv->out_mem_size = 0;
     priv->precision = SINGLE;
-    priv->vector_len = AUTO;
 }
