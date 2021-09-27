@@ -22,24 +22,17 @@
 #include <OpenCL/cl.h>
 #else
 #include <CL/cl.h>
-#include <stdio.h>
-
 #endif
 
 #include "ufo-forwardproject-task.h"
 
 
 struct _UfoForwardprojectTaskPrivate {
-    cl_context context;
     cl_kernel kernel;
     cl_mem slice_mem;
     gfloat axis_pos;
     gfloat angle_step;
     guint num_projections;
-    cl_kernel interleave_float4;
-    cl_kernel texture_float4;
-    cl_kernel uninterleave_float4;
-    size_t out_mem_size;
 };
 
 static void ufo_task_interface_init (UfoTaskIface *iface);
@@ -74,27 +67,13 @@ ufo_forwardproject_task_setup (UfoTask *task,
     UfoForwardprojectTaskPrivate *priv;
 
     priv = UFO_FORWARDPROJECT_TASK (task)->priv;
-    priv->context = ufo_resources_get_context(resources);
+
     priv->kernel = ufo_resources_get_kernel (resources, "forwardproject.cl", "forwardproject", NULL, error);
 
-    priv->interleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "interleave_single", NULL, error);
-    priv->texture_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "texture_single", NULL, error);
-//    priv->texture_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "forwardproject_tex3d", NULL, error);
-    priv->uninterleave_float4 = ufo_resources_get_kernel (resources, "forwardproject.cl", "uninterleave_single", NULL, error);
-
     if (priv->kernel != NULL)
-        UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->kernel), error);
+    UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->kernel), error);
 
-    if (priv->interleave_float4 != NULL)
-        UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->interleave_float4), error);
-
-    if (priv->texture_float4 != NULL)
-        UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->texture_float4), error);
-
-    if (priv->uninterleave_float4 != NULL)
-        UFO_RESOURCES_CHECK_SET_AND_RETURN (clRetainKernel (priv->uninterleave_float4), error);
-
-    if (priv->angle_step == 0) 
+    if (priv->angle_step == 0)
         priv->angle_step = G_PI / priv->num_projections;
 }
 
@@ -111,11 +90,9 @@ ufo_forwardproject_task_get_requisition (UfoTask *task,
 
     ufo_buffer_get_requisition (inputs[0], &in_req);
 
-    requisition->n_dims  = in_req.n_dims;
+    requisition->n_dims = 2;
     requisition->dims[0] = in_req.dims[0];
     requisition->dims[1] = priv->num_projections;
-    requisition->dims[2] = in_req.dims[2];
-
     if (priv->axis_pos == -G_MAXFLOAT) {
         priv->axis_pos = in_req.dims[0] / 2.0f;
     }
@@ -129,11 +106,10 @@ ufo_forwardproject_task_get_num_inputs (UfoTask *task)
 
 static guint
 ufo_forwardproject_task_get_num_dimensions (UfoTask *task,
-                               guint input)
+                                            guint input)
 {
     g_return_val_if_fail (input == 0, 0);
-//    return 2;
-    return 3;
+    return 2;
 }
 
 static UfoTaskMode
@@ -154,105 +130,20 @@ ufo_forwardproject_task_process (UfoTask *task,
     cl_command_queue cmd_queue;
     cl_mem in_mem;
     cl_mem out_mem;
-    cl_mem device_array;
-    cl_mem interleaved_img;
-    cl_kernel kernel_interleave;
-    cl_kernel kernel_texture;
-    cl_kernel kernel_uninterleave;
-    cl_mem reconstructed_buffer;
 
     priv = UFO_FORWARDPROJECT_TASK (task)->priv;
     node = UFO_GPU_NODE (ufo_task_node_get_proc_node (UFO_TASK_NODE (task)));
     cmd_queue = ufo_gpu_node_get_cmd_queue (node);
+    in_mem = ufo_buffer_get_device_image (inputs[0], cmd_queue);
     out_mem = ufo_buffer_get_device_array (output, cmd_queue);
     profiler = ufo_task_node_get_profiler (UFO_TASK_NODE (task));
 
-    ufo_profiler_enable_tracing(profiler,TRUE);
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (priv->kernel, 0, sizeof (cl_mem), &in_mem));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (priv->kernel, 1, sizeof (cl_mem), &out_mem));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (priv->kernel, 2, sizeof (gfloat), &priv->axis_pos));
+    UFO_RESOURCES_CHECK_CLERR (clSetKernelArg (priv->kernel, 3, sizeof (gfloat), &priv->angle_step));
 
-    if(requisition->n_dims == 2) {
-        in_mem = ufo_buffer_get_device_image (inputs[0], cmd_queue);
-
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(priv->kernel, 0, sizeof(cl_mem), &in_mem));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(priv->kernel, 1, sizeof(cl_mem), &out_mem));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(priv->kernel, 2, sizeof(gfloat), &priv->axis_pos));
-        UFO_RESOURCES_CHECK_CLERR (clSetKernelArg(priv->kernel, 3, sizeof(gfloat), &priv->angle_step));
-
-        ufo_profiler_call(profiler, cmd_queue, priv->kernel, 2, requisition->dims, NULL);
-
-    } else{
-
-        fprintf(stdout, "angle_step: %f \n",priv->angle_step);
-        fprintf(stdout, "axis_pos: %f \n",priv->axis_pos);
-
-        // Quotient
-        unsigned long quotient;
-        quotient = requisition->dims[2]/2;
-
-        // Image format
-        cl_image_format format;
-        format.image_channel_data_type = CL_FLOAT;
-        format.image_channel_order = CL_RGBA;
-
-        // Image Description
-        cl_image_desc imageDesc;
-        imageDesc.image_width = requisition->dims[0];
-        imageDesc.image_height = requisition->dims[1];
-        imageDesc.image_depth = 0;
-        imageDesc.image_array_size = quotient;
-        imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D_ARRAY;
-        imageDesc.image_slice_pitch = 0;
-        imageDesc.image_row_pitch = 0;
-        imageDesc.num_mip_levels = 0;
-        imageDesc.num_samples = 0;
-        imageDesc.buffer = NULL;
-
-        // Interleave
-        device_array = ufo_buffer_get_device_array (inputs[0], cmd_queue);
-        interleaved_img = clCreateImage(priv->context,CL_MEM_READ_WRITE,&format,&imageDesc,NULL,0);
-
-        kernel_interleave = priv->interleave_float4;
-        clSetKernelArg(kernel_interleave, 0, sizeof(cl_mem), &device_array);
-        clSetKernelArg(kernel_interleave, 1, sizeof(cl_mem), &interleaved_img);
-
-        size_t gWorkSize_3d[3] = {requisition->dims[0],requisition->dims[1],quotient};
-        ufo_profiler_call(profiler, cmd_queue, kernel_interleave, 3, gWorkSize_3d, NULL);
-
-        // Forward projection
-        size_t buffer_size = sizeof(cl_float2) * requisition->dims[0] * requisition->dims[1] * quotient;
-        reconstructed_buffer = clCreateBuffer(priv->context, CL_MEM_READ_WRITE, buffer_size, NULL, 0);
-
-        kernel_texture = priv->texture_float4;
-        clSetKernelArg(kernel_texture, 0, sizeof(cl_mem), &interleaved_img);
-        clSetKernelArg(kernel_texture, 1, sizeof(cl_mem), &reconstructed_buffer);
-        clSetKernelArg(kernel_texture, 2, sizeof(gfloat), &priv->axis_pos);
-        clSetKernelArg(kernel_texture, 3, sizeof(gfloat), &priv->angle_step);
-
-        size_t gSize[3] = {requisition->dims[0], requisition->dims[1], quotient};
-        size_t lSize[3] = {16,16,1};
-        ufo_profiler_call(profiler, cmd_queue, kernel_texture, 3, gSize, lSize);
-
-        cl_float2* host = (cl_float2*) malloc(buffer_size);
-        clEnqueueReadBuffer(cmd_queue,reconstructed_buffer,CL_TRUE,0,buffer_size,host,0,NULL,NULL);
-        float sum = 0.0f;
-        for(size_t i=0; i<requisition->dims[0] * requisition->dims[1] * quotient; i++){
-            sum += (host[i].x + host[i].y);
-        }
-        fprintf(stdout, "Sum: %f \n",sum);
-
-        // Uninterleave
-        kernel_uninterleave = priv->uninterleave_float4;
-        clSetKernelArg(kernel_uninterleave, 0, sizeof(cl_mem), &reconstructed_buffer);
-        clSetKernelArg(kernel_uninterleave, 1, sizeof(cl_mem), &out_mem);
-        ufo_profiler_call(profiler, cmd_queue, kernel_uninterleave, 3, gWorkSize_3d, NULL);
-
-        clReleaseMemObject(interleaved_img);
-        clReleaseMemObject(reconstructed_buffer);
-    }
-    size_t temp_size;
-    clGetMemObjectInfo(out_mem, CL_MEM_SIZE,
-                       sizeof(temp_size), &temp_size, NULL);
-    priv->out_mem_size += temp_size;
-    fprintf(stdout, "Time taken GPU: %f Size: %zu \n", ufo_profiler_elapsed(profiler,UFO_PROFILER_TIMER_GPU),priv->out_mem_size);
+    ufo_profiler_call (profiler, cmd_queue, priv->kernel, 2, requisition->dims, NULL);
 
     return TRUE;
 }
@@ -317,21 +208,6 @@ ufo_forwardproject_task_finalize (GObject *object)
         priv->kernel = NULL;
     }
 
-    if (priv->interleave_float4) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->interleave_float4));
-        priv->interleave_float4 = NULL;
-    }
-
-    if (priv->texture_float4) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->texture_float4));
-        priv->texture_float4 = NULL;
-    }
-
-    if (priv->uninterleave_float4) {
-        UFO_RESOURCES_CHECK_CLERR (clReleaseKernel (priv->uninterleave_float4));
-        priv->uninterleave_float4 = NULL;
-    }
-
     G_OBJECT_CLASS (ufo_forwardproject_task_parent_class)->finalize (object);
 }
 
@@ -356,27 +232,27 @@ ufo_forwardproject_task_class_init (UfoForwardprojectTaskClass *klass)
     gobject_class->finalize = ufo_forwardproject_task_finalize;
 
     properties[PROP_AXIS_POSITION] =
-        g_param_spec_float ("axis-pos",
-            "Position of rotation axis",
-            "Position of rotation axis",
-            -G_MAXFLOAT, G_MAXFLOAT, -G_MAXFLOAT,
-            G_PARAM_READWRITE);
+            g_param_spec_float ("axis-pos",
+                                "Position of rotation axis",
+                                "Position of rotation axis",
+                                -G_MAXFLOAT, G_MAXFLOAT, -G_MAXFLOAT,
+                                G_PARAM_READWRITE);
 
     properties[PROP_ANGLE_STEP] =
-        g_param_spec_float("angle-step",
-            "Increment of angle in radians",
-            "Increment of angle in radians",
-            -4.0f * ((gfloat) G_PI),
-            +4.0f * ((gfloat) G_PI),
-            0.0f,
-            G_PARAM_READWRITE);
+            g_param_spec_float("angle-step",
+                               "Increment of angle in radians",
+                               "Increment of angle in radians",
+                               -4.0f * ((gfloat) G_PI),
+                               +4.0f * ((gfloat) G_PI),
+                               0.0f,
+                               G_PARAM_READWRITE);
 
     properties[PROP_NUM_PROJECTIONS] =
-        g_param_spec_uint("number",
-            "Number of projections",
-            "Number of projections",
-            1, 32768, 256,
-            G_PARAM_READWRITE);
+            g_param_spec_uint("number",
+                              "Number of projections",
+                              "Number of projections",
+                              1, 32768, 256,
+                              G_PARAM_READWRITE);
 
     for (guint i = PROP_0 + 1; i < N_PROPERTIES; i++)
         g_object_class_install_property (gobject_class, i, properties[i]);
@@ -388,12 +264,8 @@ static void
 ufo_forwardproject_task_init(UfoForwardprojectTask *self)
 {
     self->priv = UFO_FORWARDPROJECT_TASK_GET_PRIVATE(self);
-    self->priv->kernel = NULL;
-    self->priv->interleave_float4 = NULL;
-    self->priv->uninterleave_float4 = NULL;
-    self->priv->texture_float4 = NULL;
+
     self->priv->axis_pos = -G_MAXFLOAT;
     self->priv->num_projections = 256;
     self->priv->angle_step = 0;
-    self->priv->out_mem_size = 0;
 }
