@@ -464,3 +464,8 @@ normalize_vec(global float *input_vec,
     normalized_vec[index] = (unsigned int)((input_vec[index]-min)*scale);
 }
 
+for(int proj = 0; proj < n_projections; proj++) {
+      float h = by * sin_lut[angle_offset + proj] + bx * cos_lut[angle_offset + proj] + axis_pos;
+      sum += read_imagef (sinogram, volumeSampler, (float2)(h, proj + 0.5f)).xy;
+}
+
