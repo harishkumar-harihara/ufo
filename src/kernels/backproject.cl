@@ -91,6 +91,11 @@ interleave_half (global float *sinogram,
     write_imagef(interleaved_sinograms, (int4)(idx, idy, idz, 0),(float4)(b));
 }
 
+union converter {
+  uint2  storage;
+  uchar8 a;
+};
+
 kernel void
 interleave_uint (global float *sinogram,
             write_only image2d_array_t interleaved_sinograms,
@@ -106,7 +111,18 @@ interleave_uint (global float *sinogram,
     int sinogram_offset = idz*4;
 
     const float scale = 255.0f / (max - min);
-
+    union converter il;
+    il.a.s0 = sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey] - min)*scale;
+    il.a.s1 = sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey] - min)*scale;
+    il.a.s2 = sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey] - min)*scale;
+    il.a.s3 = sinogram[idx + idy * sizex + (sinogram_offset+3) * sizex * sizey] - min)*scale;
+    il.a.s4 = sinogram[idx + idy * sizex + (sinogram_offset+4) * sizex * sizey] - min)*scale;
+    il.a.s5 = sinogram[idx + idy * sizex + (sinogram_offset+5) * sizex * sizey] - min)*scale;
+    il.a.s6 = sinogram[idx + idy * sizex + (sinogram_offset+6) * sizex * sizey] - min)*scale;
+    il.a.s7 = sinogram[idx + idy * sizex + (sinogram_offset+7) * sizex * sizey] - min)*scale;
+    
+    write_imageui(interleaved_sinograms, (int4)(idx, idy, idz, 0),(uint4)(il.storage.x, il.storage.y,0,0));
+  
     uint4 b = {(sinogram[idx + idy * sizex + (sinogram_offset) * sizex * sizey] - min)*scale,
                (sinogram[idx + idy * sizex + (sinogram_offset+1) * sizex * sizey] - min)*scale,
                (sinogram[idx + idy * sizex + (sinogram_offset+2) * sizex * sizey] - min)*scale,
